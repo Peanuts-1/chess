@@ -35,7 +35,7 @@ a rating graph and a list of recent problems you can retry.
 - Ratings and history are saved in your browser (`localStorage`).
 
 ## Learn (/learn)
-A course library in the style of chess.com's Lessons: 5 courses, 29 lessons, 104 steps (`lib/curriculum.ts`).
+A course library in the style of chess.com's Lessons: 7 courses, 44 lessons, 163 steps (including 15 opening lessons) (`lib/curriculum.ts`).
 Lessons mix explanations, free exploration, "make this move" tasks, play-along opening lines, quizzes and
 checkmate practice against the engine. Hints, stars (3 = no mistakes and no hints), XP and a day streak are saved in the browser.
 To add a lesson, add an entry to `COURSES` in `lib/curriculum.ts`: step types are `explain`, `explore`, `move`, `quiz`, `line` and `play`.
