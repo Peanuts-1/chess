@@ -1,0 +1,133 @@
+import type { Color, Move, State } from "./chess";
+import { legalMoves, makeMove, status, toSan } from "./chess";
+import { analyze } from "./engine";
+import type { ParsedGame } from "./pgn";
+
+export type Grade = "best" | "excellent" | "good" | "inaccuracy" | "mistake" | "blunder";
+export type Tag = "hung" | "allowed-mate" | "missed-win" | "missed-mate" | "gave-away" | "other";
+export interface PlyReview { san: string; mover: Color; grade: Grade; loss: number; best: Move | null; bestSan: string; note: string; tag: Tag }
+export interface Review {
+  plies: PlyReview[];
+  winPct: number[];                         // White's winning chances (0-100) for every position
+  cp: number[];                             // evaluation in centipawns from White's view (huge values mean mate)
+  accuracy: Record<Color, number>;
+  counts: Record<Color, Record<Grade, number>>;
+}
+export interface Tip { title: string; text: string }
+
+export const REVIEW_LEVELS = {
+  quick:    { depth: 3, ms: 300 },
+  standard: { depth: 4, ms: 700 },
+  deep:     { depth: 5, ms: 2500 },
+};
+
+const VAL: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+const NAME: Record<string, string> = { p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king" };
+
+export const winPct = (cp: number) => 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * Math.max(-1500, Math.min(1500, cp)))) - 1);
+const same = (a: Move | null, b: Move) => !!a && a.from === b.from && a.to === b.to && (a.promo ?? "") === (b.promo ?? "");
+
+function gradeOf(loss: number, isBest: boolean): Grade {
+  if (isBest || loss < 0.5) return "best";
+  if (loss < 2) return "excellent";
+  if (loss < 6) return "good";
+  if (loss < 12) return "inaccuracy";
+  if (loss < 22) return "mistake";
+  return "blunder";
+}
+
+function explain(s: State, mv: Move, after: State, best: Move | null, reply: Move | null, wb: number, wa: number): { note: string; tag: Tag } {
+  const bestSan = best ? toSan(s, best) : "";
+  if (best && status(makeMove(s, best)).reason === "Checkmate") return { note: `You missed checkmate with ${bestSan}.`, tag: "missed-mate" };
+  if (reply) {
+    const replySan = toSan(after, reply);
+    const afterReply = makeMove(after, reply);
+    if (status(afterReply).reason === "Checkmate") return { note: `This allows ${replySan}, which is checkmate.`, tag: "allowed-mate" };
+    const victim = after.board[reply.to];
+    if (victim) {
+      const attacker = after.board[reply.from].toLowerCase();
+      const recapture = legalMoves(afterReply).some((m) => m.to === reply.to);
+      const gain = VAL[victim.toLowerCase()] - (recapture ? VAL[attacker] : 0);
+      if (gain >= 2) return { note: `This leaves your ${NAME[victim.toLowerCase()]} open to capture: ${replySan} wins material.`, tag: "hung" };
+    }
+  }
+  const taken = best ? s.board[best.to] : "";
+  if (best && taken && VAL[taken.toLowerCase()] >= 3 && !s.board[mv.to])
+    return { note: `You missed a chance to win a ${NAME[taken.toLowerCase()]} with ${bestSan}.`, tag: "missed-win" };
+  if (wb >= 65 && wa <= 55) return { note: "You were doing well here, and this move gives the advantage away.", tag: "gave-away" };
+  return { note: best ? `${bestSan} kept more of your position.` : "", tag: "other" };
+}
+
+export async function reviewGame(
+  g: ParsedGame,
+  opt: { depth: number; ms: number; analyzer?: (s: State) => Promise<{ move: Move | null; score: number }> },
+  onProgress?: (done: number, total: number) => void,
+  cancelled?: () => boolean,
+  maxPlies = 200,
+): Promise<Review> {
+  const n = Math.min(g.moves.length, maxPlies);
+  const res: { move: Move | null; score: number }[] = [];
+  for (let i = 0; i <= n; i++) {
+    if (cancelled?.()) break;
+    res.push(opt.analyzer ? await opt.analyzer(g.states[i]) : analyze(g.states[i], opt.depth, opt.ms));
+    onProgress?.(i + 1, n + 1);
+    await new Promise((r) => setTimeout(r, 0)); // let the page repaint between positions
+  }
+  const plies: PlyReview[] = [];
+  const winPcts: number[] = res.map((r, i) => (g.states[i].turn === "w" ? winPct(r.score) : 100 - winPct(r.score)));
+  for (let i = 0; i < res.length - 1; i++) {
+    const s = g.states[i], mv = g.moves[i], mover = s.turn;
+    const wb = winPct(res[i].score), wa = winPct(-res[i + 1].score); // mover's winning chances before / after
+    const loss = Math.max(0, wb - wa);
+    const forced = legalMoves(s).length === 1;
+    const grade = gradeOf(loss, forced || same(res[i].move, mv));
+    const bad = grade === "inaccuracy" || grade === "mistake" || grade === "blunder";
+    const ex = bad ? explain(s, mv, g.states[i + 1], res[i].move, res[i + 1].move, wb, wa) : { note: "", tag: "other" as Tag };
+    plies.push({ san: g.sans[i], mover, grade, loss, best: res[i].move, bestSan: res[i].move ? toSan(s, res[i].move!) : "", ...ex });
+  }
+  const accuracy = { w: 100, b: 100 } as Record<Color, number>;
+  const counts = {} as Review["counts"];
+  for (const c of ["w", "b"] as Color[]) {
+    const mine = plies.filter((p) => p.mover === c);
+    counts[c] = { best: 0, excellent: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 };
+    for (const p of mine) counts[c][p.grade]++;
+    if (mine.length) accuracy[c] = mine.reduce((a, p) => a + Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * p.loss) - 3.1669)), 0) / mine.length;
+  }
+  const cp = res.map((r, i) => (g.states[i].turn === "w" ? r.score : -r.score));
+  return { plies, winPct: winPcts, cp, accuracy, counts };
+}
+
+const isBad = (g: Grade) => g === "inaccuracy" || g === "mistake" || g === "blunder";
+
+export function keyMoments(r: Review, side: Color, count = 3): number[] {
+  return r.plies.map((p, i) => ({ p, i })).filter((x) => x.p.mover === side && isBad(x.p.grade))
+    .sort((a, b) => b.p.loss - a.p.loss).slice(0, count).map((x) => x.i).sort((a, b) => a - b);
+}
+
+export function tipsFor(r: Review, side: Color): Tip[] {
+  const mine = r.plies.map((p, i) => ({ p, i })).filter((x) => x.p.mover === side);
+  const bad = mine.filter((x) => isBad(x.p.grade));
+  const tagN = (t: Tag) => bad.filter((x) => x.p.tag === t).length;
+  const phase = (lo: number, hi: number) => bad.filter((x) => x.i >= lo && x.i < hi).length;
+  const blunders = mine.filter((x) => x.p.grade === "blunder").length;
+  const tips: Tip[] = [];
+  if (tagN("hung") > 0)
+    tips.push({ title: "Check what your move leaves undefended", text: `A piece was left open to capture ${tagN("hung")} time(s). Before every move, ask: is the piece I am moving, or any piece I leave behind, now attacked and unprotected?` });
+  if (tagN("allowed-mate") > 0)
+    tips.push({ title: "Watch your king", text: "A move allowed checkmate. Castle early, keep the pawns in front of your king, and before moving, look at every check your opponent could give." });
+  if (tagN("missed-win") + tagN("missed-mate") > 0)
+    tips.push({ title: "Look for captures and checks first", text: "There were free pieces or a mate you did not see. On each move, scan every capture and check for both sides before choosing a quiet move. The puzzles on the Learn page train exactly this." });
+  if (tagN("gave-away") > 0)
+    tips.push({ title: "Convert your advantage", text: "You had a good position and let it slip. When ahead, trade pieces, keep your king safe, and avoid unnecessary risks." });
+  if (phase(0, 20) >= 2)
+    tips.push({ title: "Tighten your opening", text: "Most of the damage came in the first ten moves. Stick to the principles: fight for the centre, develop knights and bishops, castle, and do not move the same piece twice. See the Openings lessons." });
+  else if (phase(60, 999) >= 2)
+    tips.push({ title: "Practise endgames", text: "Mistakes piled up late in the game. Work on king-and-pawn endings and on activating your king once queens come off." });
+  if (blunders >= 2 && tips.length < 3)
+    tips.push({ title: "Slow down on critical moves", text: "You blundered more than once. When the position gets sharp, take an extra moment for a blunder check before you move." });
+  if (!tips.length)
+    tips.push(bad.length === 0
+      ? { title: "A clean game", text: "No real mistakes were found at this analysis depth. Try the Hard engine on the Play page, or re-run the review at Deeper depth." }
+      : { title: "Small improvements", text: "Your play was mostly sound. The flagged inaccuracies are worth stepping through: for each, compare your move with the suggested one." });
+  return tips.slice(0, 4);
+}
