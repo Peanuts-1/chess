@@ -265,3 +265,59 @@ code { background: var(--hover); padding: .05rem .35rem; border-radius: 4px; fon
 .attempts td, .attempts th { text-align: left !important; width: auto !important; }
 a.btn.small { text-decoration: none; }
 @media (max-width: 900px) { .tt { grid-template-columns: 1fr; } }
+.sq.mark::before { background: rgba(58, 79, 215, .32); box-shadow: inset 0 0 0 .5cqw rgba(58, 79, 215, .75); }
+
+/* learn hub */
+.stars { letter-spacing: .1em; font-size: 1.1rem; color: var(--line); white-space: nowrap; } .stars .on { color: #e0a526; }
+.lh { max-width: 1060px; margin: 0 auto; }
+.lh-hero { display: flex; justify-content: space-between; align-items: center; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+.lh-stats { display: flex; gap: .6rem; align-items: stretch; flex-wrap: wrap; }
+.lh-stat { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: .5rem .9rem; display: flex; flex-direction: column; min-width: 5.2rem; }
+.lh-stat strong { font: 700 1.4rem var(--serif); } .lh-stat span { font-size: .8rem; color: var(--muted); }
+.lh-ring { position: relative; width: 4.6rem; height: 4.6rem; } .lh-ring svg { width: 100%; height: 100%; }
+.lh-ring circle { fill: none; stroke-width: 8; } .lh-ring .bg { stroke: var(--line); } .lh-ring .fg { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .5s; }
+.lh-ring span { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 700; }
+.lh-next { flex-direction: row; justify-content: space-between; align-items: center; border-left: 6px solid var(--accent); margin-bottom: 2rem; }
+.lh-next h2 { font-size: 1.4rem; margin: .1rem 0; } .lh-next p { margin: 0; }
+.lh-level { font-size: 1.5rem; margin: 2rem 0 1rem; }
+.lh-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.2rem; }
+.lh-card { text-decoration: none; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; transition: transform .15s, box-shadow .15s; }
+.lh-card:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0, 0, 0, .12); }
+.lh-band { height: 6.5rem; display: grid; place-items: center; color: #fff; } .lh-band span { font-size: 3.6rem; line-height: 1; }
+.lh-body { padding: 1rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: .5rem; } .lh-body h3 { margin: 0; } .lh-body p { margin: 0; font-size: .95rem; }
+.lh-progress { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: .3rem; } .lh-progress div { height: 100%; border-radius: 999px; transition: width .4s; }
+
+/* course page */
+.cv { max-width: 760px; margin: 0 auto; }
+.cv-back { display: inline-block; margin-bottom: 1rem; text-decoration: none; color: var(--muted); font-weight: 600; } .cv-back:hover { color: var(--ink); }
+.cv-head { display: flex; gap: 1.2rem; align-items: flex-start; border-top: 6px solid; padding-top: 1.2rem; margin-bottom: 1.5rem; }
+.cv-head h1 { margin: 0 0 .3rem; font-size: 2.2rem; } .cv-head .lede { margin: 0 0 .8rem; }
+.cv-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .6rem; }
+.cv-row { display: flex; align-items: center; gap: 1rem; padding: .8rem 1rem; background: var(--paper); border: 1.5px solid var(--line); border-radius: 10px; text-decoration: none; }
+.cv-row:hover, .cv-row.next { border-color: var(--accent); }
+.cv-num { width: 2.3rem; height: 2.3rem; flex-shrink: 0; border-radius: 50%; display: grid; place-items: center; font-weight: 700; border: 2px solid var(--line); }
+.cv-num.done { color: #fff; border-color: transparent; }
+.cv-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+
+/* lesson player */
+.lp { max-width: 1060px; margin: 0 auto; }
+.lp-top { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.2rem; }
+.lp-x { text-decoration: none; font-size: 1.3rem; color: var(--muted); padding: .2rem .5rem; border-radius: 6px; } .lp-x:hover { background: var(--hover); color: var(--ink); }
+.lp-bar { flex: 1; height: 12px; background: var(--line); border-radius: 999px; overflow: hidden; } .lp-bar div { height: 100%; border-radius: 999px; transition: width .35s; }
+.lp-main { display: grid; grid-template-columns: minmax(0, 560px) minmax(300px, 1fr); gap: 2rem; align-items: start; }
+.lp-coach { display: flex; flex-direction: column; gap: 1rem; }
+.lp-head { display: flex; align-items: center; gap: .8rem; }
+.lp-avatar { width: 2.8rem; height: 2.8rem; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 1.6rem; flex-shrink: 0; }
+.lp-avatar.big { width: 4.6rem; height: 4.6rem; font-size: 2.6rem; }
+.lp-bubble { position: relative; background: var(--paper); border: 1.5px solid var(--line); border-radius: 14px; padding: 1rem 1.2rem; font-size: 1.1rem; }
+.lp-bubble p { margin: 0 0 .5rem; } .lp-bubble p:last-child { margin: 0; }
+.lp-options { display: grid; gap: .6rem; }
+.lp-opt { font: inherit; font-weight: 600; text-align: left; padding: .75rem 1rem; border: 2px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); cursor: pointer; }
+.lp-opt:hover:not(:disabled) { border-color: var(--accent); } .lp-opt.right { border-color: var(--good); background: rgba(29, 154, 92, .14); } .lp-opt.wrong { border-color: var(--bad); opacity: .65; }
+.lp-fb { padding: .7rem 1rem; border-radius: 10px; font-weight: 600; border-left: 6px solid var(--line); background: var(--paper); }
+.lp-fb.ok { border-left-color: var(--good); } .lp-fb.bad { border-left-color: var(--bad); } .lp-fb.info { border-left-color: var(--accent); }
+.lp-actions { display: flex; gap: .6rem; flex-wrap: wrap; }
+.lp-complete { max-width: 520px; margin: 3rem auto; text-align: center; display: flex; flex-direction: column; gap: .5rem; align-items: center; }
+.lp-stars { font-size: 3.6rem; letter-spacing: .1em; color: var(--line); } .lp-stars .on { color: #e0a526; }
+.lp-xp { font: 700 1.6rem var(--serif); color: var(--accent); margin: 0; }
+@media (max-width: 860px) { .lp-main { grid-template-columns: 1fr; } .lh-next { flex-direction: column; align-items: flex-start; gap: 1rem; } }

@@ -16,6 +16,7 @@ export interface BoardProps {
   hint?: { from: number; to: number } | null; // highlighted squares
   arrows?: Arrow[];
   badge?: Badge | null; // small label on a square, e.g. the quality of the last move
+  marks?: number[];     // squares to highlight (lessons)
 }
 
 function ArrowShape({ x1, y1, x2, y2, color }: { x1: number; y1: number; x2: number; y2: number; color: string }) {
@@ -29,7 +30,7 @@ function ArrowShape({ x1, y1, x2, y2, color }: { x1: number; y1: number; x2: num
   );
 }
 
-export default function Board({ state, orientation = "w", movable = null, onMove, lastMove, hint, arrows, badge }: BoardProps) {
+export default function Board({ state, orientation = "w", movable = null, onMove, lastMove, hint, arrows, badge, marks }: BoardProps) {
   const [sel, setSel] = useState<number | null>(null);
   const legal = useMemo(() => legalMoves(state), [state]);
   useEffect(() => setSel(null), [state]);
@@ -59,6 +60,7 @@ export default function Board({ state, orientation = "w", movable = null, onMove
       sel === i && "sel",
       lastMove && (lastMove.from === i || lastMove.to === i) && "last",
       hint && (hint.from === i || hint.to === i) && "hint",
+      marks?.includes(i) && "mark",
       kingSq === i && "check",
       isTarget && (p ? "ring" : "dot"),
     ].filter(Boolean).join(" ");
