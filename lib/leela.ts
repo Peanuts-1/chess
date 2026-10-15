@@ -4,7 +4,7 @@ import { inCheck, legalMoves, moveFromUci, toFen } from "./chess";
 
 const MATE = 100000;
 
-export async function leelaStatus(): Promise<{ available: boolean; reason?: string }> {
+export async function leelaStatus(): Promise<{ available: boolean; reason?: string; processes?: number }> {
   try { return await (await fetch("/api/lc0", { cache: "no-store" })).json(); }
   catch { return { available: false, reason: "Could not reach the server." }; }
 }

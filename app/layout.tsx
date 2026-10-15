@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 };
 
 // Applies the saved theme before first paint so dark mode does not flash white.
-const THEME_SCRIPT = `(function(){try{var s=JSON.parse(localStorage.getItem("openfile-settings")||"{}");var m=s.mode||"system";var d=m==="dark"||(m==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);var e=document.documentElement;e.dataset.theme=d?"dark":"light";e.dataset.board=s.board||"slate";}catch(x){}})();`;
+const THEME_SCRIPT = `(function(){try{var s=JSON.parse(localStorage.getItem("openfile-settings")||"{}");var m=s.mode||"system";var d=m==="dark"||(m==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);var e=document.documentElement;e.dataset.theme=d?"dark":"light";e.dataset.board=s.board||"slate";e.dataset.pieces=s.pieces||"classic";}catch(x){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

@@ -15,11 +15,13 @@ export interface Review {
 }
 export interface Tip { title: string; text: string }
 
+// Each review runs a fast first pass (shown straight away) and, unless "quick", a deeper pass that refines it.
 export const REVIEW_LEVELS = {
-  quick:    { depth: 3, ms: 300 },
-  standard: { depth: 4, ms: 700 },
-  deep:     { depth: 5, ms: 2500 },
+  quick:    { depth: 4, ms: 150 },
+  standard: { depth: 5, ms: 500 },
+  deep:     { depth: 6, ms: 2000 },
 };
+export const FIRST_PASS = REVIEW_LEVELS.quick;
 
 const VAL: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 const NAME: Record<string, string> = { p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king" };
@@ -58,21 +60,37 @@ function explain(s: State, mv: Move, after: State, best: Move | null, reply: Mov
   return { note: best ? `${bestSan} kept more of your position.` : "", tag: "other" };
 }
 
-export async function reviewGame(
+export interface PosResult { move: Move | null; score: number }
+export type Runner = (s: State, index: number) => Promise<PosResult>;
+
+// Analyses every position of the game. `concurrency` positions are searched at the same time
+// (one per worker thread), so a game is reviewed several times faster on a multi-core machine.
+export async function analyzePositions(
   g: ParsedGame,
-  opt: { depth: number; ms: number; analyzer?: (s: State) => Promise<{ move: Move | null; score: number }> },
+  run: Runner,
+  concurrency: number,
   onProgress?: (done: number, total: number) => void,
   cancelled?: () => boolean,
   maxPlies = 200,
-): Promise<Review> {
+): Promise<PosResult[] | null> {
   const n = Math.min(g.moves.length, maxPlies);
-  const res: { move: Move | null; score: number }[] = [];
-  for (let i = 0; i <= n; i++) {
-    if (cancelled?.()) break;
-    res.push(opt.analyzer ? await opt.analyzer(g.states[i]) : analyze(g.states[i], opt.depth, opt.ms));
-    onProgress?.(i + 1, n + 1);
-    await new Promise((r) => setTimeout(r, 0)); // let the page repaint between positions
-  }
+  const res: PosResult[] = new Array(n + 1);
+  let next = 0, done = 0;
+  const lane = async () => {
+    for (;;) {
+      if (cancelled?.()) return;
+      const i = next++;
+      if (i > n) return;
+      res[i] = await run(g.states[i], i);
+      onProgress?.(++done, n + 1);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, lane));
+  return cancelled?.() ? null : res;
+}
+
+// Turns the raw per-position results into the full review (grades, accuracy, notes).
+export function buildReview(g: ParsedGame, res: PosResult[]): Review {
   const plies: PlyReview[] = [];
   const winPcts: number[] = res.map((r, i) => (g.states[i].turn === "w" ? winPct(r.score) : 100 - winPct(r.score)));
   for (let i = 0; i < res.length - 1; i++) {
@@ -95,6 +113,19 @@ export async function reviewGame(
   }
   const cp = res.map((r, i) => (g.states[i].turn === "w" ? r.score : -r.score));
   return { plies, winPct: winPcts, cp, accuracy, counts };
+}
+
+// Simple one-thread version (used with Leela, which handles one request at a time, and in tests).
+export async function reviewGame(
+  g: ParsedGame,
+  opt: { depth: number; ms: number; analyzer?: (s: State) => Promise<{ move: Move | null; score: number }> },
+  onProgress?: (done: number, total: number) => void,
+  cancelled?: () => boolean,
+  maxPlies = 200,
+): Promise<Review> {
+  const run: Runner = opt.analyzer ?? (async (s) => { await new Promise((r) => setTimeout(r, 0)); return analyze(s, opt.depth, opt.ms); });
+  const res = await analyzePositions(g, run, 1, onProgress, cancelled, maxPlies);
+  return buildReview(g, res ?? []);
 }
 
 const isBad = (g: Grade) => g === "inaccuracy" || g === "mistake" || g === "blunder";

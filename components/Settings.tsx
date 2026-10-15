@@ -5,7 +5,8 @@ import { leelaStatus } from "@/lib/leela";
 export type Mode = "system" | "light" | "dark";
 export type BoardTheme = "slate" | "green" | "walnut" | "blue" | "rose" | "violet";
 export type EngineChoice = "builtin" | "leela";
-export interface Settings { mode: Mode; board: BoardTheme; engine: EngineChoice }
+export type PieceStyle = "classic" | "slate" | "wood" | "contrast";
+export interface Settings { mode: Mode; board: BoardTheme; pieces: PieceStyle; engine: EngineChoice }
 export interface LeelaState { status: "idle" | "checking" | "ready" | "missing"; reason?: string }
 
 export const BOARDS: { id: BoardTheme; label: string }[] = [
@@ -13,7 +14,11 @@ export const BOARDS: { id: BoardTheme; label: string }[] = [
   { id: "blue", label: "Blue" }, { id: "rose", label: "Rose" }, { id: "violet", label: "Violet" },
 ];
 
-const DEFAULTS: Settings = { mode: "system", board: "slate", engine: "builtin" };
+export const PIECE_STYLES: { id: PieceStyle; label: string }[] = [
+  { id: "classic", label: "Classic" }, { id: "slate", label: "Slate" }, { id: "wood", label: "Wood" }, { id: "contrast", label: "High contrast" },
+];
+
+const DEFAULTS: Settings = { mode: "system", board: "slate", pieces: "classic", engine: "builtin" };
 const KEY = "openfile-settings";
 
 interface Ctx {
@@ -48,6 +53,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       const dark = settings.mode === "dark" || (settings.mode === "system" && mq.matches);
       document.documentElement.dataset.theme = dark ? "dark" : "light";
       document.documentElement.dataset.board = settings.board;
+      document.documentElement.dataset.pieces = settings.pieces;
     };
     apply();
     if (settings.mode === "system") { mq.addEventListener("change", apply); return () => mq.removeEventListener("change", apply); }

@@ -137,6 +137,8 @@ function pseudo(s: State): Move[] {
   return mv;
 }
 
+export { pseudo as pseudoMoves }; // pseudo-legal moves (may leave the king in check); used by the engine
+
 export function makeMove(s: State, m: Move): State {
   const b = s.board.slice();
   const p = b[m.from], t = p.toLowerCase(), us = s.turn;

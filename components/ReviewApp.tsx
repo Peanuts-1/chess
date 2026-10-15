@@ -3,15 +3,21 @@ import { useEffect, useRef, useState } from "react";
 import Board from "./Board";
 import type { Arrow } from "./Board";
 import type { Color, Move, State } from "@/lib/chess";
-import { makeMove } from "@/lib/chess";
+import { makeMove, toFen, toSan } from "@/lib/chess";
 import { useSettings } from "./Settings";
 import { leelaAnalyze } from "@/lib/leela";
 import { parsePgn, splitGames } from "@/lib/pgn";
 import type { ParsedGame } from "@/lib/pgn";
-import { REVIEW_LEVELS, keyMoments, reviewGame, tipsFor } from "@/lib/review";
-import type { Grade, Review } from "@/lib/review";
+import { REVIEW_LEVELS, analyzePositions, buildReview, keyMoments, tipsFor, winPct } from "@/lib/review";
+import type { Grade, Review, Runner } from "@/lib/review";
+import { MATE_SCORE, analyze, analyzeLines } from "@/lib/engine";
+import type { Line } from "@/lib/engine";
+import { AnalysisPool, defaultPoolSize, workersSupported } from "@/lib/pool";
 
-const LEELA_NODES = { quick: 100, standard: 400, deep: 1600 };
+const LEELA_NODES = { quick: 60, standard: 300, deep: 1200 }; // search nodes per position
+const LEELA_FIRST = 30;    // nodes for the quick first look
+const LEELA_PARALLEL = 4;  // requests in flight; the server spreads them over its lc0 processes
+const LINE_COLORS = ["#3fa34d", "#3b82d6", "#8b94a0"]; // best, second and third engine line
 interface GameItem { title: string; sub: string; pgn: string; user?: string }
 
 export const META: Record<Grade, { label: string; sym: string; color: string; art: string }> = {
@@ -55,6 +61,19 @@ export default function ReviewApp() {
   const { settings, leela } = useSettings();
   const leelaOn = settings.engine === "leela" && leela.status === "ready";
   const [usedEngine, setUsedEngine] = useState("built-in engine");
+  const [refine, setRefine] = useState<[number, number] | null>(null);
+  const [notice, setNotice] = useState("");
+  const [variation, setVariation] = useState<Move[]>([]);          // moves you tried on the board, on top of the game position
+  const [lines, setLines] = useState<Line[] | null>(null);          // engine lines for the position on screen
+  const [linesFor, setLinesFor] = useState("");                   // the position (FEN) the lines belong to
+  const [linesBusy, setLinesBusy] = useState(false);
+  const [showLines, setShowLines] = useState(true);
+  const [lineArrows, setLineArrows] = useState(true);
+  const [hoverLine, setHoverLine] = useState<number | null>(null);
+  const [drawMode, setDrawMode] = useState(false);
+  const linesPool = useRef<AnalysisPool | null>(null);
+  const linesToken = useRef(0);
+  const linesWorkers = useRef(true);
 
   async function start(pgn: string, who?: string) {
     setErr(""); setRev(null);
@@ -63,21 +82,67 @@ export default function ReviewApp() {
     const id = ++run.current;
     setGame(g); setPly(0); setShowBest(false); setRetry(null); setPlaying(false); setTab("moves");
     setSide(who && (g.headers.Black || "").toLowerCase() === who.toLowerCase() ? "b" : "w");
-    setProgress([0, 1]);
+    setProgress([0, 1]); setRefine(null); setNotice("");
     setUsedEngine(leelaOn ? "Leela" : "built-in engine");
-    const opt = leelaOn ? { ...REVIEW_LEVELS[speed], analyzer: (s: State) => leelaAnalyze(s, LEELA_NODES[speed]) } : REVIEW_LEVELS[speed];
     try {
-      const r = await reviewGame(g, opt, (d, t) => { if (id === run.current) setProgress([d, t]); }, () => id !== run.current);
-      if (id !== run.current) return;
-      setRev(r); setProgress(null);
+      if (leelaOn) {
+        await runLeela(g, id);
+      } else await runBuiltin(g, id);
     } catch (e) {
       if (id !== run.current) return;
-      setErr(`Leela stopped responding (${(e as Error).message}). Check Settings, or switch to the built-in engine.`);
-      setGame(null); setProgress(null);
+      setErr(`${leelaOn ? "Leela stopped responding" : "The analysis failed"} (${(e as Error).message}). ${leelaOn ? "Check Settings, or switch to the built-in engine." : "Please try again."}`);
+      setGame(null); setProgress(null); setRefine(null);
     }
   }
 
-  function reset() { run.current++; setGame(null); setRev(null); setProgress(null); setErr(""); setPlaying(false); }
+  // Leela: a quick first look appears within seconds, then a deeper pass refines it. Requests run in parallel
+  // (the server spreads them over several lc0 processes), and the opening moves, which rarely hide mistakes, use fewer nodes.
+  async function runLeela(g: ParsedGame, id: number) {
+    const cancelled = () => id !== run.current;
+    const runner = (nodes: number): Runner => (s, i) => leelaAnalyze(s, i < 8 ? Math.min(nodes, 40) : nodes);
+    const first = await analyzePositions(g, runner(speed === "quick" ? LEELA_NODES.quick : LEELA_FIRST), LEELA_PARALLEL, (d, t) => { if (!cancelled()) setProgress([d, t]); }, cancelled);
+    if (!first || cancelled()) return;
+    setRev(buildReview(g, first)); setProgress(null);
+    if (speed === "quick") return;
+    setRefine([0, first.length]);
+    try {
+      const better = await analyzePositions(g, runner(LEELA_NODES[speed]), LEELA_PARALLEL, (d, t) => { if (!cancelled()) setRefine([d, t]); }, cancelled);
+      if (better && !cancelled()) setRev(buildReview(g, better));
+    } catch {
+      if (!cancelled()) setNotice("Leela stopped responding during the deeper pass, so the quick results are shown.");
+    }
+    setRefine(null);
+  }
+
+  // Built-in engine: positions are searched in parallel on Web Workers. A fast first pass shows the
+  // review within seconds; a deeper pass then refines the grades in the background.
+  async function runBuiltin(g: ParsedGame, id: number) {
+    const cancelled = () => id !== run.current;
+    const attempt = async (useWorkers: boolean) => {
+      const pool = useWorkers && workersSupported() ? new AnalysisPool(defaultPoolSize()) : null;
+      const conc = pool ? pool.size : 1;
+      const runner = (l: { depth: number; ms: number }): Runner =>
+        pool ? (s) => pool.analyze(s, l.depth, l.ms) : async (s) => { await new Promise((r) => setTimeout(r, 0)); return analyze(s, l.depth, l.ms); };
+      try {
+        const first = await analyzePositions(g, runner(REVIEW_LEVELS.quick), conc, (d, t) => { if (!cancelled()) setProgress([d, t]); }, cancelled);
+        if (!first || cancelled()) return;
+        setRev(buildReview(g, first)); setProgress(null);
+        if (speed === "quick") return;
+        setRefine([0, first.length]);
+        const better = await analyzePositions(g, runner(REVIEW_LEVELS[speed]), conc, (d, t) => { if (!cancelled()) setRefine([d, t]); }, cancelled);
+        if (better && !cancelled()) setRev(buildReview(g, better));
+        setRefine(null);
+      } finally { pool?.terminate(); }
+    };
+    try { await attempt(true); }
+    catch {
+      if (cancelled()) return;
+      setNotice("Parallel analysis is not available here, so the review runs on one thread.");
+      await attempt(false);
+    }
+  }
+
+  function reset() { run.current++; setGame(null); setRev(null); setProgress(null); setRefine(null); setNotice(""); setErr(""); setPlaying(false); }
 
   function usePgn() {
     const parts = splitGames(text);
@@ -105,15 +170,16 @@ export default function ReviewApp() {
   }
 
   const n = rev ? rev.plies.length : 0;
-  const go = (p: number) => { setPly(Math.max(0, Math.min(n, p))); setShowBest(false); setRetry(null); };
+  const go = (p: number) => { setPly(Math.max(0, Math.min(n, p))); setShowBest(false); setRetry(null); setVariation([]); };
 
   useEffect(() => {
     if (!rev) return;
     const h = (e: KeyboardEvent) => {
       const t = (e.target as HTMLElement).tagName;
       if (t === "TEXTAREA" || t === "INPUT" || t === "SELECT") return;
-      if (e.key === "ArrowLeft") { setPly((p) => Math.max(0, p - 1)); setShowBest(false); setRetry(null); }
-      if (e.key === "ArrowRight") { setPly((p) => Math.min(rev.plies.length, p + 1)); setShowBest(false); setRetry(null); }
+      if (e.key === "ArrowLeft") { setPly((p) => Math.max(0, p - 1)); setShowBest(false); setRetry(null); setVariation([]); }
+      if (e.key === "ArrowRight") { setPly((p) => Math.min(rev.plies.length, p + 1)); setShowBest(false); setRetry(null); setVariation([]); }
+      if (e.key === "Escape") setVariation([]);
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -121,11 +187,37 @@ export default function ReviewApp() {
 
   useEffect(() => {
     if (!playing) return;
-    const id = setInterval(() => setPly((p) => { if (p >= n) { setPlaying(false); return p; } setShowBest(false); setRetry(null); return p + 1; }), 1100);
+    const id = setInterval(() => setPly((p) => { if (p >= n) { setPlaying(false); return p; } setShowBest(false); setRetry(null); setVariation([]); return p + 1; }), 1100);
     return () => clearInterval(id);
   }, [playing, n]);
 
   useEffect(() => { listRef.current?.querySelector(".cur")?.scrollIntoView({ block: "nearest" }); }, [ply, tab]);
+
+  // Engine lines: analyse the position on screen (the game position, or the line you are exploring).
+  useEffect(() => {
+    if (!rev || !game || !showLines || retry || showBest) return;
+    let target = game.states[ply];
+    for (const m of variation) target = makeMove(target, m);
+    const token = ++linesToken.current;
+    setLines(null); setLinesBusy(true);
+    const timer = setTimeout(async () => {
+      try {
+        let res: Line[];
+        if (linesWorkers.current && workersSupported()) {
+          if (!linesPool.current) linesPool.current = new AnalysisPool(2);
+          linesPool.current.clearQueue();
+          res = await linesPool.current.lines(target, 6, 1200, 3);
+        } else res = analyzeLines(target, 5, 800, 3);
+        if (token === linesToken.current) { setLines(res); setLinesFor(toFen(target)); setLinesBusy(false); }
+      } catch {
+        if (token !== linesToken.current) return;
+        linesWorkers.current = false; linesPool.current?.terminate(); linesPool.current = null;
+        setLines(analyzeLines(target, 4, 500, 3)); setLinesFor(toFen(target)); setLinesBusy(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [rev, game, ply, variation, showLines, retry, showBest]);
+  useEffect(() => () => { linesPool.current?.terminate(); }, []);
 
   // ---------- input screen ----------
   if (!game) {
@@ -155,9 +247,9 @@ export default function ReviewApp() {
         </div>
         <label className="speed">Analysis depth
           <select value={speed} onChange={(e) => setSpeed(e.target.value as keyof typeof REVIEW_LEVELS)}>
-            <option value="quick">{leelaOn ? "Quick: 100 nodes per move" : "Quick: about 10 seconds"}</option>
-            <option value="standard">{leelaOn ? "Standard: 400 nodes per move" : "Standard: about 30 to 60 seconds"}</option>
-            <option value="deep">{leelaOn ? "Deeper: 1600 nodes per move" : "Deeper: several minutes, catches more tactics"}</option>
+            <option value="quick">{leelaOn ? "Quick: 60 nodes per move" : "Quick: about 3 seconds"}</option>
+            <option value="standard">{leelaOn ? "Standard: quick look, then 300 nodes per move" : "Standard: first look in seconds, refined in under a minute"}</option>
+            <option value="deep">{leelaOn ? "Deeper: quick look, then 1200 nodes per move" : "Deeper: first look in seconds, refined over a few minutes"}</option>
           </select>
         </label>
         <p className="muted">Engine: {leelaOn ? "Leela Chess Zero" : "built-in engine"}.{settings.engine === "leela" && !leelaOn ? " Leela is not connected, so the built-in engine will be used (see Settings)." : " You can switch in Settings."}</p>
@@ -213,16 +305,52 @@ export default function ReviewApp() {
     arrows = [{ from: game.moves[ply - 1].from, to: game.moves[ply - 1].to, color: META[cur.grade].color }];
     if (cur.best) arrows.push({ from: cur.best.from, to: cur.best.to, color: "#3fa34d" });
   }
+  const exploring = !retry && !(showBest && cur && ply > 0);
+  let curLines: Line[] | null = null; // engine lines, only if they belong to the position on screen
+  if (exploring) {
+    if (variation.length) {
+      let s2 = game.states[ply];
+      for (const m of variation) s2 = makeMove(s2, m);
+      boardState = s2; lastMove = variation[variation.length - 1]; badge = null;
+    }
+    movable = boardState.turn; // you can move the pieces yourself to explore
+    curLines = lines && linesFor === toFen(boardState) ? lines : null;
+    if (showLines && lineArrows && curLines) curLines.forEach((l, k) => { if (hoverLine === null || hoverLine === k) arrows.push({ from: l.move.from, to: l.move.to, color: LINE_COLORS[k] }); });
+  }
+
+  // text of the variation on screen
+  let varText = "";
+  if (variation.length) {
+    let s3 = game.states[ply]; const parts: string[] = [];
+    for (const m of variation) { parts.push((s3.turn === "w" ? `${s3.full}. ` : parts.length === 0 ? `${s3.full}… ` : "") + toSan(s3, m)); s3 = makeMove(s3, m); }
+    varText = parts.join(" ");
+  }
+  const lineEval = (score: number, turn: Color) => {
+    const w = turn === "w" ? score : -score;
+    if (Math.abs(score) > 90000) return `${w > 0 ? "" : "-"}M${Math.ceil((MATE_SCORE - Math.abs(score) + 1) / 2)}`;
+    return `${w > 0 ? "+" : ""}${(w / 100).toFixed(2)}`;
+  };
+  const lineTokens = (l: Line) => {
+    let c = boardState; const out: string[] = [];
+    l.pv.forEach((m, j) => { out.push((c.turn === "w" ? `${c.full}. ` : j === 0 ? `${c.full}… ` : "") + toSan(c, m)); c = makeMove(c, m); });
+    return out;
+  };
+  const playLine = (l: Line, j: number) => setVariation((v) => [...v, ...l.pv.slice(0, j + 1)]);
 
   function onRetryMove(m: Move) {
-    if (!retry) return;
+    if (!retry) { setVariation((v) => [...v, m]); return; } // a move you play yourself
+
     const best = rev!.plies[retry.ply - 1].best;
     if (sameMove(best, m)) setRetry({ ply: retry.ply, move: m });
     else setRetry({ ply: retry.ply, wrong: true });
   }
 
-  const win = rev.winPct[ply];
-  const label = evalLabel(rev.cp[ply]);
+  let win = rev.winPct[ply];
+  let label = evalLabel(rev.cp[ply]);
+  if (exploring && variation.length && curLines && curLines.length) { // the bar follows the line you are exploring
+    const w = boardState.turn === "w" ? curLines[0].score : -curLines[0].score;
+    win = winPct(w); label = evalLabel(w);
+  }
   const moveNo = (i: number) => `${game.states[i].full}${rev.plies[i].mover === "w" ? "." : "…"}`;
   const tips = tipsFor(rev, side);
   const moments = keyMoments(rev, side);
@@ -260,6 +388,8 @@ export default function ReviewApp() {
     coach = { title: `${cur.san} is ${META[cur.grade].art}`, body, color: META[cur.grade].color };
   }
 
+  if (exploring && variation.length) coach = { title: "Exploring a line", body: [varText, "Click engine moves or move the pieces. Press Esc or Back to return to the game."] };
+
   const accBox = (c: Color) => (
     <div className={"accbox " + c}>
       <span className="accnum">{rev.accuracy[c].toFixed(1)}</span>
@@ -281,7 +411,7 @@ export default function ReviewApp() {
         {strip(opp)}
         <div className="boardrow">
           <EvalBar win={win} label={label} whiteAtBottom={side === "w"} />
-          <Board state={boardState} orientation={side} movable={movable} onMove={onRetryMove} lastMove={lastMove} arrows={arrows} badge={badge} />
+          <Board state={boardState} orientation={side} movable={movable} onMove={onRetryMove} lastMove={lastMove} arrows={arrows} badge={badge} drawable drawMode={drawMode} />
         </div>
         {strip(side)}
         <div className="controls">
@@ -291,11 +421,21 @@ export default function ReviewApp() {
           <button className="btn small" onClick={() => go(ply + 1)} disabled={ply === n} aria-label="Next move">▶</button>
           <button className="btn small" onClick={() => go(n)} disabled={ply === n} aria-label="End">⏭</button>
           <button className="btn small" onClick={() => setSide(opp)}>Flip</button>
+          <button className={"btn small" + (drawMode ? " primary" : "")} aria-pressed={drawMode} onClick={() => setDrawMode(!drawMode)} title="Draw arrows with the left mouse button or a finger">✎ Draw</button>
         </div>
         <Graph rev={rev} ply={ply} onPick={go} />
+        <p className="muted small-note">Draw on the board: right-click and drag for an arrow, right-click a square for a circle. Shift = red, Ctrl = blue, Alt = yellow. Click the board to clear.</p>
       </div>
 
       <div className="rv-right">
+        {refine && (
+          <div className="refine" role="status">
+            <span>Refining the analysis… {Math.round((refine[0] / refine[1]) * 100)}%</span>
+            <progress value={refine[0]} max={refine[1]} />
+            <span className="muted">You can already browse the game. Grades may change slightly when this finishes.</span>
+          </div>
+        )}
+        {notice && <p className="muted">{notice}</p>}
         <div className="rv-head">
           <h1>Game Review</h1>
           <p className="muted">{who("w")} vs {who("b")}{game.headers.Result ? ` · ${game.headers.Result}` : ""}</p>
@@ -304,20 +444,50 @@ export default function ReviewApp() {
 
         <div className="coach" style={coach.color ? { borderLeftColor: coach.color } : undefined}>
           <div className="coach-title" style={coach.color ? { color: coach.color } : undefined}>
-            {cur && !retry && <span className="cbadge" style={{ background: META[cur.grade].color }}>{META[cur.grade].sym}</span>}
+            {cur && !retry && !variation.length && <span className="cbadge" style={{ background: META[cur.grade].color }}>{META[cur.grade].sym}</span>}
             {coach.title}
           </div>
           {coach.body.map((t, i) => <p key={i}>{t}</p>)}
           <div className="coach-btns">
-            {cur && !retry && cur.grade !== "best" && cur.best && (
+            {cur && !retry && !variation.length && cur.grade !== "best" && cur.best && (
               <button className="btn small" onClick={() => setShowBest(!showBest)}>{showBest ? "Hide best move" : "Show best move"}</button>
             )}
-            {cur && !retry && isBad(cur.grade) && cur.best && (
+            {cur && !retry && !variation.length && isBad(cur.grade) && cur.best && (
               <button className="btn small primary" onClick={() => { setShowBest(false); setRetry({ ply }); }}>Retry</button>
             )}
             {retry && <button className="btn small" onClick={() => setRetry(null)}>{retry.move ? "Continue" : "Give up"}</button>}
+            {variation.length > 0 && !retry && (
+              <>
+                <button className="btn small primary" onClick={() => setVariation([])}>Back to game</button>
+                <button className="btn small" onClick={() => setVariation((v) => v.slice(0, -1))}>Take back a move</button>
+              </>
+            )}
           </div>
         </div>
+
+        <section className="lines card" aria-label="Engine lines">
+          <div className="lines-head">
+            <h2>Engine lines</h2>
+            <label className="chk"><input type="checkbox" checked={showLines} onChange={(e) => setShowLines(e.target.checked)} /> Show</label>
+            {showLines && <label className="chk"><input type="checkbox" checked={lineArrows} onChange={(e) => setLineArrows(e.target.checked)} /> Arrows</label>}
+          </div>
+          {showLines && (retry || (showBest && cur)) && <p className="muted">Lines are hidden while you retry a move or view the previous position.</p>}
+          {showLines && !retry && !(showBest && cur) && (
+            <>
+              {!curLines && linesBusy && <p className="muted">Analysing this position…</p>}
+              {curLines && curLines.length === 0 && <p className="muted">There are no moves here: the game is over.</p>}
+              {curLines?.map((l, k) => (
+                <div key={k} className={"lline" + (k === 0 ? " top" : "")} onMouseEnter={() => setHoverLine(k)} onMouseLeave={() => setHoverLine(null)}>
+                  <span className={"leval " + ((boardState.turn === "w" ? l.score : -l.score) >= 0 ? "w" : "b")}>{lineEval(l.score, boardState.turn)}</span>
+                  <span className="lmoves">
+                    {lineTokens(l).map((t, j) => <button key={j} className="lm" onClick={() => playLine(l, j)} title="Play this line on the board">{t}</button>)}
+                  </span>
+                </div>
+              ))}
+              <p className="muted small-note">Built-in engine, depth 6. Click a move to play the line on the board, or move the pieces yourself.</p>
+            </>
+          )}
+        </section>
 
         <div className="tabs" role="tablist">
           <button role="tab" aria-selected={tab === "moves"} className={tab === "moves" ? "on" : ""} onClick={() => setTab("moves")}>Moves</button>

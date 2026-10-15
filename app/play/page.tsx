@@ -99,6 +99,7 @@ export default function Play() {
           lastMove={cur.move}
           hint={hintInfo?.move ?? null}
           onMove={play}
+          drawable
         />
         <div className="boardbar"><span className={st.over ? "good" : ""}>{message}</span></div>
         {hintInfo && <p className="hinttext">{hintInfo.text}</p>}

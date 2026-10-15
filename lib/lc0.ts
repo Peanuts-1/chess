@@ -1,5 +1,6 @@
-// Server-only: runs a real Leela Chess Zero (lc0) process and talks to it over UCI.
-// Configure with LC0_PATH (binary), LC0_WEIGHTS (network file) and optionally LC0_BACKEND in .env.local.
+// Server-only: runs real Leela Chess Zero (lc0) processes and talks to them over UCI.
+// Configure in .env.local:  LC0_PATH (binary), LC0_WEIGHTS (network file), LC0_BACKEND (optional),
+// LC0_PROCESSES (how many lc0 processes work at once, default 2, max 4) and LC0_ARGS (extra lc0 options).
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -23,13 +24,13 @@ function parseResult(lines: string[]): LeelaResult {
   return { bestmove: best && best !== "(none)" && best !== "0000" ? best : null, cp, pv, nodes };
 }
 
-class Lc0 {
+// One lc0 process. Handles one search at a time.
+class Lc0Proc {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private buf = "";
   private lineHandlers = new Set<(l: string) => void>();
   private failHandlers = new Set<(e: Error) => void>();
   private ready: Promise<void> | null = null;
-  private queue: Promise<unknown> = Promise.resolve();
 
   private send(cmd: string) { this.proc?.stdin.write(cmd + "\n"); }
 
@@ -51,7 +52,7 @@ class Lc0 {
     this.proc = null; this.ready = null; this.buf = "";
   }
 
-  private start(): Promise<void> {
+  ensure(): Promise<void> {
     if (this.ready) return this.ready;
     const path = process.env.LC0_PATH;
     this.ready = (async () => {
@@ -59,6 +60,7 @@ class Lc0 {
       const args: string[] = [];
       if (process.env.LC0_WEIGHTS) args.push(`--weights=${process.env.LC0_WEIGHTS}`);
       if (process.env.LC0_BACKEND) args.push(`--backend=${process.env.LC0_BACKEND}`);
+      if (process.env.LC0_ARGS) args.push(...process.env.LC0_ARGS.split(/\s+/).filter(Boolean));
       const p = spawn(path, args, { stdio: ["pipe", "pipe", "pipe"] });
       this.proc = p;
       p.stdin.on("error", () => {});
@@ -83,29 +85,68 @@ class Lc0 {
     return this.ready;
   }
 
-  async status(): Promise<{ available: boolean; reason?: string }> {
-    if (!process.env.LC0_PATH) return { available: false, reason: "LC0_PATH is not set. Add it to .env.local and restart the server." };
-    try { await this.start(); return { available: true }; }
-    catch (e) { return { available: false, reason: (e as Error).message }; }
-  }
-
-  analyse(fen: string, nodes: number): Promise<LeelaResult> {
-    const run = async (): Promise<LeelaResult> => {
-      try {
-        await this.start();
-        this.send("ucinewgame");
-        this.send("isready");
-        await this.waitFor((l) => l === "readyok", 30000);
-        this.send(`position fen ${fen}`);
-        this.send(`go nodes ${nodes}`);
-        return parseResult(await this.waitFor((l) => l.startsWith("bestmove"), 120000));
-      } catch (e) { this.reset(); throw e; } // next request starts a fresh process
-    };
-    const p = this.queue.then(run, run);
-    this.queue = p.catch(() => undefined);
-    return p;
+  // `position fen` starts a fresh search tree each time, so no "ucinewgame" or "isready" round trips are needed.
+  async analyse(fen: string, nodes: number): Promise<LeelaResult> {
+    try {
+      await this.ensure();
+      this.send(`position fen ${fen}`);
+      this.send(`go nodes ${nodes}`);
+      return parseResult(await this.waitFor((l) => l.startsWith("bestmove"), 120000));
+    } catch (e) { this.reset(); throw e; } // the next request starts a fresh process
   }
 }
 
-const g = globalThis as unknown as { __lc0?: Lc0 };
-export const lc0 = () => (g.__lc0 ??= new Lc0());
+interface Job { key: string; fen: string; nodes: number; resolve: (r: LeelaResult) => void; reject: (e: Error) => void }
+
+// Several lc0 processes working through one queue, plus a cache of results already computed.
+class Lc0Pool {
+  private procs: Lc0Proc[] = [];
+  private idle: Lc0Proc[] = [];
+  private queue: Job[] = [];
+  private cache = new Map<string, LeelaResult>();
+  readonly max: number;
+
+  constructor() {
+    const n = parseInt(process.env.LC0_PROCESSES || "2", 10);
+    this.max = Math.max(1, Math.min(4, Number.isFinite(n) ? n : 2));
+  }
+
+  async status(): Promise<{ available: boolean; reason?: string; processes?: number }> {
+    if (!process.env.LC0_PATH) return { available: false, reason: "LC0_PATH is not set. Add it to .env.local and restart the server." };
+    try {
+      let p = this.idle[0] ?? this.procs[0];
+      if (!p) { p = new Lc0Proc(); this.procs.push(p); this.idle.push(p); }
+      await p.ensure();
+      return { available: true, processes: this.max };
+    } catch (e) { return { available: false, reason: (e as Error).message }; }
+  }
+
+  analyse(fen: string, nodes: number): Promise<LeelaResult> {
+    const key = `${fen}|${nodes}`;
+    const hit = this.cache.get(key);
+    if (hit) return Promise.resolve(hit);
+    return new Promise((resolve, reject) => { this.queue.push({ key, fen, nodes, resolve, reject }); this.pump(); });
+  }
+
+  private remember(key: string, r: LeelaResult) {
+    this.cache.set(key, r);
+    if (this.cache.size > 4000) this.cache.delete(this.cache.keys().next().value as string);
+  }
+
+  private pump() {
+    while (this.queue.length) {
+      let p = this.idle.pop();
+      if (!p) {
+        if (this.procs.length >= this.max) return; // every process is busy: wait
+        p = new Lc0Proc(); this.procs.push(p);
+      }
+      const proc = p, job = this.queue.shift()!;
+      proc.analyse(job.fen, job.nodes)
+        .then((r) => { this.remember(job.key, r); job.resolve(r); }, (e) => job.reject(e))
+        .finally(() => { this.idle.push(proc); this.pump(); });
+    }
+  }
+}
+
+const g = globalThis as unknown as { __lc0pool?: Lc0Pool };
+export const lc0 = () => (g.__lc0pool ??= new Lc0Pool());
