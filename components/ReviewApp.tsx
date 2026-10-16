@@ -6,9 +6,11 @@ import type { Color, Move, State } from "@/lib/chess";
 import { makeMove, toFen, toSan } from "@/lib/chess";
 import { useSettings } from "./Settings";
 import { leelaAnalyze } from "@/lib/leela";
-import { parsePgn, splitGames } from "@/lib/pgn";
+import { clockAt, moveTimes, parsePgn, splitGames, timeControl } from "@/lib/pgn";
 import type { ParsedGame } from "@/lib/pgn";
-import { REVIEW_LEVELS, analyzePositions, buildReview, keyMoments, tipsFor, winPct } from "@/lib/review";
+import { REVIEW_LEVELS, analyzePositions, buildReview, isBad, keyMoments, tipsFor, winPct } from "@/lib/review";
+import { annotatedPgn } from "@/lib/export";
+import { Captured, MoveTimes, PhasesTable } from "./ReviewParts";
 import type { Grade, Review, Runner } from "@/lib/review";
 import { MATE_SCORE, analyze, analyzeLines } from "@/lib/engine";
 import type { Line } from "@/lib/engine";
@@ -24,12 +26,13 @@ export const META: Record<Grade, { label: string; sym: string; color: string; ar
   best: { label: "Best", sym: "★", color: "#5b9a4a", art: "the best move" },
   excellent: { label: "Excellent", sym: "!", color: "#6aa84f", art: "an excellent move" },
   good: { label: "Good", sym: "✓", color: "#8fae5a", art: "a good move" },
+  book: { label: "Book", sym: "B", color: "#a88761", art: "a book move" },
   inaccuracy: { label: "Inaccuracy", sym: "?!", color: "#e0a526", art: "an inaccuracy" },
+  miss: { label: "Miss", sym: "✗", color: "#cf5c8a", art: "a miss" },
   mistake: { label: "Mistake", sym: "?", color: "#e5822b", art: "a mistake" },
   blunder: { label: "Blunder", sym: "??", color: "#ca3431", art: "a blunder" },
 };
-const GRADES: Grade[] = ["best", "excellent", "good", "inaccuracy", "mistake", "blunder"];
-const isBad = (g: Grade) => g === "inaccuracy" || g === "mistake" || g === "blunder";
+const GRADES: Grade[] = ["best", "excellent", "good", "book", "inaccuracy", "miss", "mistake", "blunder"];
 const sameMove = (a: Move | null, b: Move) => !!a && a.from === b.from && a.to === b.to && (a.promo ?? "q") === (b.promo ?? "q");
 
 const hdr = (pgn: string, k: string) => pgn.match(new RegExp(`\\[${k}\\s+"([^"]*)"\\]`))?.[1] ?? "";
@@ -74,13 +77,16 @@ export default function ReviewApp() {
   const linesPool = useRef<AnalysisPool | null>(null);
   const linesToken = useRef(0);
   const linesWorkers = useRef(true);
+  const [showEvals, setShowEvals] = useState(false);                // evaluation next to each move
+  const [learn, setLearn] = useState<{ list: number[]; i: number } | null>(null); // 'Learn from your mistakes' session
+  const [copied, setCopied] = useState("");
 
   async function start(pgn: string, who?: string) {
     setErr(""); setRev(null);
     let g: ParsedGame;
     try { g = parsePgn(pgn); } catch (e) { setErr((e as Error).message); return; }
     const id = ++run.current;
-    setGame(g); setPly(0); setShowBest(false); setRetry(null); setPlaying(false); setTab("moves");
+    setGame(g); setPly(0); setShowBest(false); setRetry(null); setPlaying(false); setTab("moves"); setLearn(null); setVariation([]);
     setSide(who && (g.headers.Black || "").toLowerCase() === who.toLowerCase() ? "b" : "w");
     setProgress([0, 1]); setRefine(null); setNotice("");
     setUsedEngine(leelaOn ? "Leela" : "built-in engine");
@@ -142,7 +148,7 @@ export default function ReviewApp() {
     }
   }
 
-  function reset() { run.current++; setGame(null); setRev(null); setProgress(null); setRefine(null); setNotice(""); setErr(""); setPlaying(false); }
+  function reset() { run.current++; setLearn(null); setGame(null); setRev(null); setProgress(null); setRefine(null); setNotice(""); setErr(""); setPlaying(false); }
 
   function usePgn() {
     const parts = splitGames(text);
@@ -170,24 +176,37 @@ export default function ReviewApp() {
   }
 
   const n = rev ? rev.plies.length : 0;
-  const go = (p: number) => { setPly(Math.max(0, Math.min(n, p))); setShowBest(false); setRetry(null); setVariation([]); };
+  const go = (p: number) => { setPly(Math.max(0, Math.min(n, p))); setShowBest(false); setRetry(null); setVariation([]); setLearn(null); };
+  const isError = (g: Grade) => g === "mistake" || g === "blunder" || g === "miss";
+  const errorIdx = (): number[] => (rev ? rev.plies.map((p, i) => (p.mover === side && isError(p.grade) ? i : -1)).filter((i) => i >= 0) : []);
+  function jumpMistake(dir: 1 | -1) { // previous / next mistake of the side you are reviewing
+    const list = errorIdx(), here = ply - 1;
+    const t = dir === 1 ? list.find((i) => i > here) : [...list].reverse().find((i) => i < here);
+    if (t !== undefined) go(t + 1);
+  }
 
   useEffect(() => {
     if (!rev) return;
     const h = (e: KeyboardEvent) => {
       const t = (e.target as HTMLElement).tagName;
       if (t === "TEXTAREA" || t === "INPUT" || t === "SELECT") return;
-      if (e.key === "ArrowLeft") { setPly((p) => Math.max(0, p - 1)); setShowBest(false); setRetry(null); setVariation([]); }
-      if (e.key === "ArrowRight") { setPly((p) => Math.min(rev.plies.length, p + 1)); setShowBest(false); setRetry(null); setVariation([]); }
-      if (e.key === "Escape") setVariation([]);
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "ArrowLeft") go(ply - 1);
+      else if (e.key === "ArrowRight") go(ply + 1);
+      else if (e.key === "Home" || e.key === "ArrowUp") { e.preventDefault(); go(0); }
+      else if (e.key === "End" || e.key === "ArrowDown") { e.preventDefault(); go(rev.plies.length); }
+      else if (e.key === "Escape") setVariation([]);
+      else if (e.key === "f" || e.key === "F") setSide((c) => (c === "w" ? "b" : "w"));
+      else if (e.key === "[") jumpMistake(-1);
+      else if (e.key === "]") jumpMistake(1);
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [rev]);
+  });
 
   useEffect(() => {
     if (!playing) return;
-    const id = setInterval(() => setPly((p) => { if (p >= n) { setPlaying(false); return p; } setShowBest(false); setRetry(null); setVariation([]); return p + 1; }), 1100);
+    const id = setInterval(() => setPly((p) => { if (p >= n) { setPlaying(false); return p; } setShowBest(false); setRetry(null); setVariation([]); setLearn(null); return p + 1; }), 1100);
     return () => clearInterval(id);
   }, [playing, n]);
 
@@ -286,6 +305,44 @@ export default function ReviewApp() {
   const cur = ply > 0 ? rev.plies[ply - 1] : null;
   const who = (c: Color) => game.headers[c === "w" ? "White" : "Black"] || (c === "w" ? "White" : "Black");
   const opp: Color = side === "w" ? "b" : "w";
+  const times = moveTimes(game);
+  const hasClocks = game.clocks.some((c) => c != null);
+  const tc = timeControl(game.headers);
+  const finalOpening = [...rev.opening.names].reverse().find(Boolean) ?? null;
+  const openingNow = (ply > 0 ? rev.opening.names[Math.min(ply, rev.opening.names.length) - 1] : null) ?? finalOpening;
+  const fmtClock = (v: number | null) => v == null ? "" : v >= 3600 ? `${Math.floor(v / 3600)}:${String(Math.floor((v % 3600) / 60)).padStart(2, "0")}:${String(Math.floor(v % 60)).padStart(2, "0")}` : v < 20 ? `${Math.floor(v / 60)}:${(v % 60).toFixed(1).padStart(4, "0")}` : `${Math.floor(v / 60)}:${String(Math.floor(v % 60)).padStart(2, "0")}`;
+
+  // "Learn from your mistakes": step through your errors and find a better move for each
+  function startLearn() {
+    const list = errorIdx().filter((i) => rev!.plies[i].best);
+    if (!list.length) return;
+    setLearn({ list, i: 0 }); setTab("moves"); setPly(list[0] + 1); setShowBest(false); setVariation([]); setRetry({ ply: list[0] + 1 });
+  }
+  function nextLearn() {
+    if (!learn) return;
+    const ni = learn.i + 1;
+    if (ni >= learn.list.length) { setLearn(null); setRetry(null); return; }
+    setLearn({ ...learn, i: ni }); setPly(learn.list[ni] + 1); setRetry({ ply: learn.list[ni] + 1 });
+  }
+  function showAnswer() {
+    if (!retry) return;
+    const best = rev!.plies[retry.ply - 1].best;
+    if (best) setRetry({ ply: retry.ply, move: best });
+  }
+
+  // export
+  async function copyText(t: string, label: string) {
+    try { await navigator.clipboard.writeText(t); setCopied(label); } catch { setCopied("Copy failed"); }
+    setTimeout(() => setCopied(""), 1600);
+  }
+  function downloadPgn() {
+    const blob = new Blob([annotatedPgn(game!, rev!)], { type: "application/x-chess-pgn" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${game!.headers.White || "white"}-vs-${game!.headers.Black || "black"}.pgn`.replace(/[^\w.-]+/g, "_");
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
 
   // What the board shows: the position after the move, the one before it (with arrows), or a retry attempt.
   let boardState: State = game.states[ply];
@@ -364,10 +421,11 @@ export default function ReviewApp() {
   });
   const mv = (i?: number) => {
     if (i === undefined) return <span />;
-    const g = rev.plies[i].grade, showSym = g === "best" || isBad(g);
+    const g = rev.plies[i].grade, showSym = g === "best" || g === "book" || isBad(g);
     return (
       <button className={`mv${ply === i + 1 ? " cur" : ""}`} onClick={() => go(i + 1)}>
         {showSym && <span className="msym" style={{ color: META[g].color }}>{META[g].sym}</span>}{rev.plies[i].san}
+        {showEvals && <span className="meval">{evalLabel(rev.cp[i + 1])}</span>}
       </button>
     );
   };
@@ -376,15 +434,17 @@ export default function ReviewApp() {
   let coach: { title: string; body: string[]; color?: string };
   if (retry) {
     const p = rev.plies[retry.ply - 1];
+    const head = learn ? `Learn from your mistakes · ${learn.i + 1} of ${learn.list.length}` : null;
     coach = retry.move ? { title: "Correct!", body: [`${p.bestSan} is the engine's choice here.`], color: META.best.color }
       : retry.wrong ? { title: "Not quite", body: ["That is not the engine's move. Try another one."], color: META.mistake.color }
-      : { title: `Your turn: find a better move than ${p.san}`, body: ["Move a piece on the board."] };
+      : { title: head ?? `Your turn: find a better move than ${p.san}`, body: head ? [`In the game you played ${p.san}${p.note ? ". " + p.note : "."} Find a better move.`] : ["Move a piece on the board."] };
   } else if (!cur) {
     coach = { title: "Ready to review", body: ["Press Next, use the arrow keys, or jump to a key moment in Insights."] };
   } else {
     const body: string[] = [];
+    if (cur.grade === "book") { const nm = rev.opening.names[ply - 1]; if (nm) body.push(nm); }
     if (cur.note) body.push(cur.note);
-    if (cur.grade !== "best" && cur.bestSan) body.push(`Best was ${cur.bestSan}.`);
+    if (cur.grade !== "best" && cur.grade !== "book" && cur.bestSan) body.push(`Best was ${cur.bestSan}.`);
     coach = { title: `${cur.san} is ${META[cur.grade].art}`, body, color: META[cur.grade].color };
   }
 
@@ -396,14 +456,22 @@ export default function ReviewApp() {
       <span className="accwho">{who(c)}</span>
     </div>
   );
-  const strip = (c: Color) => (
-    <div className="pstrip">
-      <span className={"pdot " + c} />
-      <strong>{who(c)}</strong>
-      <span className="muted">{hdr(`[${c === "w" ? "WhiteElo" : "BlackElo"} "${game.headers[c === "w" ? "WhiteElo" : "BlackElo"] ?? ""}"]`, c === "w" ? "WhiteElo" : "BlackElo")}</span>
-      <span className="pacc">{rev.accuracy[c].toFixed(0)}%</span>
-    </div>
-  );
+  const strip = (c: Color) => {
+    const elo = game.headers[c === "w" ? "WhiteElo" : "BlackElo"];
+    const clock = hasClocks ? clockAt(game, c, ply) : null;
+    return (
+      <div className="pstrip">
+        <span className={"pdot " + c} />
+        <strong>{who(c)}</strong>
+        {elo && elo !== "?" && <span className="muted">({elo})</span>}
+        <Captured state={boardState} color={c} />
+        <span className="pright">
+          {clock != null && <span className={"clock" + (boardState.turn === c ? " on" : "")}>{fmtClock(clock)}</span>}
+          <span className="pacc">{rev.accuracy[c].toFixed(0)}%</span>
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="rv">
@@ -420,11 +488,14 @@ export default function ReviewApp() {
           <button className="btn small" onClick={() => setPlaying(!playing)} disabled={ply === n && !playing}>{playing ? "❚❚ Pause" : "▶ Play"}</button>
           <button className="btn small" onClick={() => go(ply + 1)} disabled={ply === n} aria-label="Next move">▶</button>
           <button className="btn small" onClick={() => go(n)} disabled={ply === n} aria-label="End">⏭</button>
-          <button className="btn small" onClick={() => setSide(opp)}>Flip</button>
+          <button className="btn small" onClick={() => setSide(opp)} title="Flip the board (F)">Flip</button>
+          <button className="btn small" onClick={() => jumpMistake(-1)} title="Previous mistake ([)">‹ Mistake</button>
+          <button className="btn small" onClick={() => jumpMistake(1)} title="Next mistake (])">Mistake ›</button>
           <button className={"btn small" + (drawMode ? " primary" : "")} aria-pressed={drawMode} onClick={() => setDrawMode(!drawMode)} title="Draw arrows with the left mouse button or a finger">✎ Draw</button>
         </div>
-        <Graph rev={rev} ply={ply} onPick={go} />
-        <p className="muted small-note">Draw on the board: right-click and drag for an arrow, right-click a square for a circle. Shift = red, Ctrl = blue, Alt = yellow. Click the board to clear.</p>
+        <Graph rev={rev} ply={ply} onPick={go} label={(i) => (i === 0 ? "Start" : `${moveNo(i - 1)} ${rev.plies[i - 1].san}  ${evalLabel(rev.cp[i])}`)} />
+        {hasClocks && <MoveTimes times={times} ply={ply} onPick={go} />}
+        <p className="muted small-note">Draw on the board: right-click and drag for an arrow, right-click a square for a circle (Shift = red, Ctrl = blue, Alt = yellow). Keys: ← → step, Home/End, F flip, [ ] previous/next mistake, Esc leave a line.</p>
       </div>
 
       <div className="rv-right">
@@ -439,6 +510,8 @@ export default function ReviewApp() {
         <div className="rv-head">
           <h1>Game Review</h1>
           <p className="muted">{who("w")} vs {who("b")}{game.headers.Result ? ` · ${game.headers.Result}` : ""}</p>
+          {openingNow && <p className="opening"><span aria-hidden="true">📖</span> {openingNow}</p>}
+          <p className="muted small-note">{[tc ? `${Math.round((tc.base / 60) * 10) / 10} min${tc.inc ? ` + ${tc.inc} s` : ""}` : "", game.headers.Date && !game.headers.Date.includes("?") ? game.headers.Date.replace(/\./g, "-") : "", game.headers.Termination ?? ""].filter(Boolean).join(" · ")}</p>
         </div>
         <div className="accrow">{accBox("w")}{accBox("b")}</div>
 
@@ -449,13 +522,21 @@ export default function ReviewApp() {
           </div>
           {coach.body.map((t, i) => <p key={i}>{t}</p>)}
           <div className="coach-btns">
-            {cur && !retry && !variation.length && cur.grade !== "best" && cur.best && (
+            {cur && !retry && !variation.length && cur.grade !== "best" && cur.grade !== "book" && cur.best && (
               <button className="btn small" onClick={() => setShowBest(!showBest)}>{showBest ? "Hide best move" : "Show best move"}</button>
             )}
             {cur && !retry && !variation.length && isBad(cur.grade) && cur.best && (
               <button className="btn small primary" onClick={() => { setShowBest(false); setRetry({ ply }); }}>Retry</button>
             )}
-            {retry && <button className="btn small" onClick={() => setRetry(null)}>{retry.move ? "Continue" : "Give up"}</button>}
+            {retry && !learn && <button className="btn small" onClick={() => setRetry(null)}>{retry.move ? "Continue" : "Give up"}</button>}
+            {retry && learn && (
+              <>
+                {retry.move
+                  ? <button className="btn small primary" onClick={nextLearn}>{learn.i + 1 >= learn.list.length ? "Finish" : "Next mistake"}</button>
+                  : (<><button className="btn small" onClick={showAnswer}>Show answer</button><button className="btn small" onClick={nextLearn}>Skip</button></>)}
+                <button className="btn small" onClick={() => { setLearn(null); setRetry(null); }}>Exit</button>
+              </>
+            )}
             {variation.length > 0 && !retry && (
               <>
                 <button className="btn small primary" onClick={() => setVariation([])}>Back to game</button>
@@ -495,9 +576,20 @@ export default function ReviewApp() {
         </div>
 
         {tab === "moves" ? (
-          <div className="movelist tall" ref={listRef} aria-label="Moves">
-            {rows.map((r) => <div key={r.n + "-" + (r.w ?? r.b)} className="mrow"><span className="mn">{r.n}.</span>{mv(r.w)}{mv(r.b)}</div>)}
-          </div>
+          <>
+            <div className="mtool">
+              <label className="chk"><input type="checkbox" checked={showEvals} onChange={(e) => setShowEvals(e.target.checked)} /> Show evaluations</label>
+            </div>
+            <div className="movelist tall" ref={listRef} aria-label="Moves">
+              {rows.map((r) => <div key={r.n + "-" + (r.w ?? r.b)} className="mrow"><span className="mn">{r.n}.</span>{mv(r.w)}{mv(r.b)}</div>)}
+            </div>
+            <div className="export">
+              <button className="btn small" onClick={() => copyText(annotatedPgn(game, rev), "PGN copied")}>Copy PGN</button>
+              <button className="btn small" onClick={downloadPgn}>Download PGN</button>
+              <button className="btn small" onClick={() => copyText(toFen(boardState), "FEN copied")}>Copy FEN</button>
+              {copied && <span className="good" role="status">{copied}</span>}
+            </div>
+          </>
         ) : (
           <div className="insights">
             <table className="ctable">
@@ -509,13 +601,18 @@ export default function ReviewApp() {
                     <td>{rev.counts.w[g]}</td><td>{rev.counts.b[g]}</td>
                   </tr>
                 ))}
+                <tr className="sumrow"><td>Average centipawn loss</td><td>{rev.acpl.w.toFixed(0)}</td><td>{rev.acpl.b.toFixed(0)}</td></tr>
               </tbody>
             </table>
+            <PhasesTable phases={rev.phases} names={[who("w"), who("b")]} />
             <div className="segment" role="group" aria-label="Review as">
               <span>Advice for</span>
               <button className={side === "w" ? "on" : ""} onClick={() => setSide("w")}>{who("w")}</button>
               <button className={side === "b" ? "on" : ""} onClick={() => setSide("b")}>{who("b")}</button>
             </div>
+            <button className="btn small primary learnbtn" disabled={errorIdx().filter((i) => rev.plies[i].best).length === 0} onClick={startLearn}>
+              Learn from your mistakes ({errorIdx().filter((i) => rev.plies[i].best).length})
+            </button>
             {moments.length > 0 && (
               <p className="moments">Key moments:{" "}
                 {moments.map((i) => (
@@ -549,19 +646,23 @@ function EvalBar({ win, label, whiteAtBottom }: { win: number; label: string; wh
   );
 }
 
-function Graph({ rev, ply, onPick }: { rev: Review; ply: number; onPick: (p: number) => void }) {
+function Graph({ rev, ply, onPick, label }: { rev: Review; ply: number; onPick: (p: number) => void; label: (i: number) => string }) {
+  const [hover, setHover] = useState<number | null>(null);
   const data = rev.winPct, n = data.length - 1;
   const x = (i: number) => (n === 0 ? 0 : (i / n) * 600);
+  const idxAt = (e: React.MouseEvent<SVGSVGElement>) => { const b = e.currentTarget.getBoundingClientRect(); return Math.max(0, Math.min(n, Math.round(((e.clientX - b.left) / b.width) * n))); };
   const pts = data.map((w, i) => `${x(i).toFixed(1)},${(100 - w).toFixed(1)}`).join(" ");
   return (
     <div className="graphwrap">
       <svg className="graph" viewBox="0 0 600 100" preserveAspectRatio="none" role="img" aria-label="Evaluation graph"
-        onClick={(e) => { const b = e.currentTarget.getBoundingClientRect(); onPick(Math.round(((e.clientX - b.left) / b.width) * n)); }}>
+        onClick={(e) => onPick(idxAt(e))} onMouseMove={(e) => setHover(idxAt(e))} onMouseLeave={() => setHover(null)}>
         <rect width="600" height="100" fill="#2b3541" />
         <polygon points={`0,100 ${pts} 600,100`} fill="#f4f6f8" />
         <line x1="0" x2="600" y1="50" y2="50" stroke="#8a97a5" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4 4" />
+        {hover !== null && <line x1={x(hover)} x2={x(hover)} y1="0" y2="100" stroke="#8a97a5" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />}
         <line x1={x(ply)} x2={x(ply)} y1="0" y2="100" stroke="#3a4fd7" strokeWidth="3" vectorEffect="non-scaling-stroke" />
       </svg>
+      {hover !== null && <div className="gtip" style={{ left: `${(hover / Math.max(1, n)) * 100}%` }}>{label(hover)}</div>}
       {rev.plies.map((p, i) => isBad(p.grade) && p.grade !== "inaccuracy" ? (
         <button key={i} className="gdot" aria-label={`${META[p.grade].label}: ${p.san}`} title={`${p.san}: ${META[p.grade].label}`}
           style={{ left: `${((i + 1) / n) * 100}%`, top: `${100 - data[i + 1]}%`, background: META[p.grade].color }} onClick={() => onPick(i + 1)} />

@@ -56,3 +56,12 @@ To add a lesson, add an entry to `COURSES` in `lib/curriculum.ts`: step types ar
 Reviews with Leela show a quick first look within seconds (30 nodes per position), then refine it (Standard 300, Deeper 1200 nodes).
 The server runs `LC0_PROCESSES` lc0 processes (default 2, max 4) so several positions are searched at once, caches results it has already computed,
 and uses fewer nodes on the first moves of a game. Extra lc0 options can be passed with `LC0_ARGS`.
+
+## Review: more like chess.com and lichess
+- **Opening names and Book moves** (`lib/openings.ts`): ~110 openings matched by position, so transpositions are recognised. Theory moves are graded "Book".
+- **Miss**: a grade for failing to punish an opponent's mistake. Average centipawn loss and accuracy per game phase are in the Insights tab.
+- **Clocks**: if the PGN has `[%clk]` comments (chess.com and lichess exports do), the review shows each player's clock and a "move times" chart.
+- **Material**: captured pieces and the material lead are shown next to each player.
+- **Learn from your mistakes**: steps through your mistakes, misses and blunders and asks you to find a better move for each.
+- **Export**: copy or download an annotated PGN (`[%eval]` and `[%clk]` comments, `?!` `?` `??` marks) and copy the current FEN.
+- **Shortcuts**: arrows step, Home/End, F flips, `[` and `]` jump to the previous/next mistake, Esc leaves a line you are exploring.

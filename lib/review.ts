@@ -2,16 +2,23 @@ import type { Color, Move, State } from "./chess";
 import { legalMoves, makeMove, status, toSan } from "./chess";
 import { analyze } from "./engine";
 import type { ParsedGame } from "./pgn";
+import { detectOpening } from "./openings";
+import type { BookInfo } from "./openings";
 
-export type Grade = "best" | "excellent" | "good" | "inaccuracy" | "mistake" | "blunder";
-export type Tag = "hung" | "allowed-mate" | "missed-win" | "missed-mate" | "gave-away" | "other";
-export interface PlyReview { san: string; mover: Color; grade: Grade; loss: number; best: Move | null; bestSan: string; note: string; tag: Tag }
+export type Grade = "best" | "excellent" | "good" | "book" | "inaccuracy" | "miss" | "mistake" | "blunder";
+export type Tag = "hung" | "allowed-mate" | "missed-win" | "missed-mate" | "gave-away" | "miss" | "other";
+export type Phase = "Opening" | "Middlegame" | "Endgame";
+export interface PlyReview { san: string; mover: Color; grade: Grade; loss: number; cpl: number; best: Move | null; bestSan: string; note: string; tag: Tag }
+export interface PhaseStat { phase: Phase; w: number | null; b: number | null }
 export interface Review {
   plies: PlyReview[];
   winPct: number[];                         // White's winning chances (0-100) for every position
   cp: number[];                             // evaluation in centipawns from White's view (huge values mean mate)
   accuracy: Record<Color, number>;
   counts: Record<Color, Record<Grade, number>>;
+  acpl: Record<Color, number>;              // average centipawn loss
+  phases: PhaseStat[];                      // accuracy in each phase of the game
+  opening: BookInfo;                        // theory moves and opening names
 }
 export interface Tip { title: string; text: string }
 
@@ -89,30 +96,61 @@ export async function analyzePositions(
   return cancelled?.() ? null : res;
 }
 
+const clampCp = (cp: number) => Math.max(-1500, Math.min(1500, cp));
+const moveAcc = (loss: number) => Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * loss) - 3.1669));
+const GRADE_LIST: Grade[] = ["best", "excellent", "good", "book", "inaccuracy", "miss", "mistake", "blunder"];
+
+// Opening until move 10, endgame once little material is left, middlegame in between.
+function phaseOf(ply: number, s: State): Phase {
+  let mat = 0;
+  for (const p of s.board) if (p && !"pPkK".includes(p)) mat += VAL[p.toLowerCase()];
+  if (ply < 20) return "Opening";
+  return mat <= 26 ? "Endgame" : "Middlegame";
+}
+
 // Turns the raw per-position results into the full review (grades, accuracy, notes).
 export function buildReview(g: ParsedGame, res: PosResult[]): Review {
   const plies: PlyReview[] = [];
+  const opening = detectOpening(g.states);
   const winPcts: number[] = res.map((r, i) => (g.states[i].turn === "w" ? winPct(r.score) : 100 - winPct(r.score)));
   for (let i = 0; i < res.length - 1; i++) {
     const s = g.states[i], mv = g.moves[i], mover = s.turn;
     const wb = winPct(res[i].score), wa = winPct(-res[i + 1].score); // mover's winning chances before / after
-    const loss = Math.max(0, wb - wa);
+    let loss = Math.max(0, wb - wa);
+    let cpl = Math.max(0, Math.min(1000, clampCp(res[i].score) - clampCp(-res[i + 1].score)));
     const forced = legalMoves(s).length === 1;
-    const grade = gradeOf(loss, forced || same(res[i].move, mv));
-    const bad = grade === "inaccuracy" || grade === "mistake" || grade === "blunder";
-    const ex = bad ? explain(s, mv, g.states[i + 1], res[i].move, res[i + 1].move, wb, wa) : { note: "", tag: "other" as Tag };
-    plies.push({ san: g.sans[i], mover, grade, loss, best: res[i].move, bestSan: res[i].move ? toSan(s, res[i].move!) : "", ...ex });
+    let grade = gradeOf(loss, forced || same(res[i].move, mv));
+    const prev = plies[i - 1];
+    const prevBad = !!prev && (prev.grade === "mistake" || prev.grade === "blunder" || prev.grade === "miss");
+    if (opening.book[i]) { grade = "book"; loss = 0; cpl = 0; } // opening theory is never an error
+    else if (prevBad && wb >= 62 && wa >= 40 && (grade === "inaccuracy" || grade === "mistake" || grade === "blunder")) grade = "miss";
+    const bad = grade === "inaccuracy" || grade === "mistake" || grade === "blunder" || grade === "miss";
+    let ex = bad ? explain(s, mv, g.states[i + 1], res[i].move, res[i + 1].move, wb, wa) : { note: "", tag: "other" as Tag };
+    if (grade === "miss") ex = { note: ex.tag === "other" || ex.tag === "gave-away" ? "Your opponent's last move was a mistake, but this does not make the most of it." : ex.note, tag: ex.tag === "other" || ex.tag === "gave-away" ? "miss" : ex.tag };
+    plies.push({ san: g.sans[i], mover, grade, loss, cpl, best: res[i].move, bestSan: res[i].move ? toSan(s, res[i].move!) : "", ...ex });
   }
   const accuracy = { w: 100, b: 100 } as Record<Color, number>;
+  const acpl = { w: 0, b: 0 } as Record<Color, number>;
   const counts = {} as Review["counts"];
   for (const c of ["w", "b"] as Color[]) {
     const mine = plies.filter((p) => p.mover === c);
-    counts[c] = { best: 0, excellent: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 };
+    counts[c] = Object.fromEntries(GRADE_LIST.map((x) => [x, 0])) as Record<Grade, number>;
     for (const p of mine) counts[c][p.grade]++;
-    if (mine.length) accuracy[c] = mine.reduce((a, p) => a + Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * p.loss) - 3.1669)), 0) / mine.length;
+    if (mine.length) {
+      accuracy[c] = mine.reduce((a, p) => a + moveAcc(p.loss), 0) / mine.length;
+      acpl[c] = mine.reduce((a, p) => a + p.cpl, 0) / mine.length;
+    }
   }
+  const phases: PhaseStat[] = (["Opening", "Middlegame", "Endgame"] as Phase[]).map((phase) => {
+    const out: PhaseStat = { phase, w: null, b: null };
+    for (const c of ["w", "b"] as Color[]) {
+      const xs = plies.filter((p, i) => p.mover === c && phaseOf(i, g.states[i]) === phase);
+      if (xs.length) out[c] = xs.reduce((a, p) => a + moveAcc(p.loss), 0) / xs.length;
+    }
+    return out;
+  });
   const cp = res.map((r, i) => (g.states[i].turn === "w" ? r.score : -r.score));
-  return { plies, winPct: winPcts, cp, accuracy, counts };
+  return { plies, winPct: winPcts, cp, accuracy, counts, acpl, phases, opening };
 }
 
 // Simple one-thread version (used with Leela, which handles one request at a time, and in tests).
@@ -128,7 +166,7 @@ export async function reviewGame(
   return buildReview(g, res ?? []);
 }
 
-const isBad = (g: Grade) => g === "inaccuracy" || g === "mistake" || g === "blunder";
+export const isBad = (g: Grade) => g === "inaccuracy" || g === "mistake" || g === "blunder" || g === "miss";
 
 export function keyMoments(r: Review, side: Color, count = 3): number[] {
   return r.plies.map((p, i) => ({ p, i })).filter((x) => x.p.mover === side && isBad(x.p.grade))
@@ -148,6 +186,8 @@ export function tipsFor(r: Review, side: Color): Tip[] {
     tips.push({ title: "Watch your king", text: "A move allowed checkmate. Castle early, keep the pawns in front of your king, and before moving, look at every check your opponent could give." });
   if (tagN("missed-win") + tagN("missed-mate") > 0)
     tips.push({ title: "Look for captures and checks first", text: "There were free pieces or a mate you did not see. On each move, scan every capture and check for both sides before choosing a quiet move. The puzzles on the Learn page train exactly this." });
+  if (tagN("miss") > 0)
+    tips.push({ title: "Punish your opponent's mistakes", text: "After an opponent error you did not make the most of it. When the last move looks odd, stop and ask what changed: any new checks, captures or loose pieces?" });
   if (tagN("gave-away") > 0)
     tips.push({ title: "Convert your advantage", text: "You had a good position and let it slip. When ahead, trade pieces, keep your king safe, and avoid unnecessary risks." });
   if (phase(0, 20) >= 2)
