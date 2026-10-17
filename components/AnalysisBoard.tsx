@@ -314,7 +314,7 @@ export default function AnalysisBoard() {
         <section className="card an-eng">
           <h2>Engines</h2>
           {KEYS.map((k) => (
-            <label key={k} className="chk engrow">
+            <label key={k} className={"chk engrow" + (ready[k] ? "" : " unavailable")}>
               <input type="checkbox" checked={on[k]} disabled={!ready[k]} onChange={(e) => setOn({ ...on, [k]: e.target.checked })} />
               <span className="dotc" style={{ background: COLOR[k] }} />
               <span>{LABEL[k]}</span>

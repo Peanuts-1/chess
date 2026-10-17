@@ -344,6 +344,8 @@ a.btn.small { text-decoration: none; }
 .lines { gap: .5rem; }
 .lines-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; } .lines-head h2 { margin: 0; font-size: 1.1rem; margin-right: auto; }
 .chk { display: inline-flex; align-items: center; gap: .3rem; font-weight: 600; font-size: .9rem; cursor: pointer; } .chk input { accent-color: var(--accent); }
+.engrow.unavailable { opacity: .5; cursor: not-allowed; }
+.engrow.unavailable input { cursor: not-allowed; }
 .lline { display: flex; gap: .6rem; align-items: baseline; padding: .35rem .2rem; border-top: 1px solid var(--line); }
 .lline.top { border-top: 0; }
 .leval { flex-shrink: 0; min-width: 3.6rem; text-align: center; font: 700 .85rem ui-monospace, Menlo, Consolas, monospace; padding: .1rem .4rem; border-radius: 4px; }

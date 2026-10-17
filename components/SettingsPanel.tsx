@@ -86,15 +86,13 @@ export default function SettingsPanel() {
             : stockfish.status === "checking" ? "Checking…" : "Not checked yet."}
         </p>
         <button className="btn small" onClick={checkStockfish}>Test connection</button>
-        <details>
-          <summary>How to set up Stockfish</summary>
-          <ol className="steps">
-            <li>Download <strong>Stockfish</strong> for your system from <a href="https://stockfishchess.org" target="_blank" rel="noreferrer">stockfishchess.org</a> and unzip it.</li>
-            <li>In <code>.env.local</code>, set <code>STOCKFISH_PATH</code> to the Stockfish program. Optional: <code>STOCKFISH_THREADS</code> (default 1), <code>STOCKFISH_HASH</code> in MB (default 64) and <code>STOCKFISH_PROCESSES</code> (default 2).</li>
-            <li>Restart <code>npm run dev</code> and press Test connection.</li>
-          </ol>
-          <p className="muted">Like Leela, Stockfish runs on your own computer through the site&apos;s server.</p>
-        </details>
+        <h3>Set up Stockfish</h3>
+        <ol className="steps">
+          <li>Download <strong>Stockfish</strong> for your system from <a href="https://stockfishchess.org/" target="_blank" rel="noreferrer">stockfishchess.org</a> and unzip it.</li>
+          <li>In <code>.env.local</code>, set <code>STOCKFISH_PATH</code> to the Stockfish program. Optional: <code>STOCKFISH_THREADS</code> (default 1), <code>STOCKFISH_HASH</code> in MB (default 64) and <code>STOCKFISH_PROCESSES</code> (default 2).</li>
+          <li>Restart <code>npm run dev</code> and press Test connection.</li>
+        </ol>
+        <p className="muted">Stockfish runs on your own computer through the site&apos;s server.</p>
       </section>
     </div>
   );
