@@ -71,10 +71,7 @@ A free board for self-study. Move pieces for either side, try variations (shown 
 watch live engine lines. Turn on any of **Stockfish**, **Leela (lc0)** and the **built-in engine**: each shows its top moves with
 evaluations and variations (click a move to play the line), and the page tells you when the engines disagree. Every move you play is graded
 (best, inaccuracy, blunder...) from the engine evaluations. Engines search in stages (shallow first, then deeper), so answers appear quickly and improve.
-- Stockfish runs on your computer through the site's server (`lib/uci.ts`, `app/api/engine/route.ts`). To connect it:
-  1. Download [Stockfish](https://stockfishchess.org/) for your system and unzip it.
-  2. Set `STOCKFISH_PATH` in `.env.local` to the Stockfish program. Optional settings are `STOCKFISH_THREADS` (default 1),
-     `STOCKFISH_HASH` in MB (default 64) and `STOCKFISH_PROCESSES` (default 2).
-  3. Restart `npm run dev` and press **Test connection** in Settings.
-- Leela also runs through the site's server. Configure `LC0_PATH` and `LC0_WEIGHTS` in `.env.local` as described above.
+- Stockfish and Leela run on your computer through the site's server (`lib/uci.ts`, `app/api/engine/route.ts`). Set `STOCKFISH_PATH` (and optionally
+  `STOCKFISH_THREADS`, `STOCKFISH_HASH`, `STOCKFISH_PROCESSES`) next to the Leela settings in `.env.local`.
 - The Review page's "Open in analysis board" button sends the current game here.
+- Layout: the board stays in view while a single side panel scrolls. Engine toggles and lines sit at the top, the move list (a table, with variations as indented blocks) fills the rest, and FEN/PGN setup is on its own tab.

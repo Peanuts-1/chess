@@ -11,8 +11,8 @@ import { MATE_SCORE, analyzeLines } from "@/lib/engine";
 import type { Line } from "@/lib/engine";
 import { engineLines } from "@/lib/engines";
 import { AnalysisPool, workersSupported } from "@/lib/pool";
-import { addMove, createTree, fromGame, mainEnd, pathTo, regrade, removeNode, toPgn, uciOf } from "@/lib/analysisTree";
-import type { Tree } from "@/lib/analysisTree";
+import { addMove, createTree, fromGame, layoutLine, mainEnd, pathTo, regrade, removeNode, toPgn, uciOf } from "@/lib/analysisTree";
+import type { LRow, Tree } from "@/lib/analysisTree";
 import { parsePgn } from "@/lib/pgn";
 import { detectOpening } from "@/lib/openings";
 import { winPct } from "@/lib/review";
@@ -46,6 +46,7 @@ function pvTokens(base: State, l: Line): string[] {
   l.pv.forEach((m, j) => { out.push((c.turn === "w" ? `${c.full}. ` : j === 0 ? `${c.full}… ` : "") + toSan(c, m)); c = makeMove(c, m); });
   return out;
 }
+
 function validateFen(fen: string): string | null {
   try {
     const s = parseFen(fen);
@@ -83,6 +84,8 @@ export default function AnalysisBoard() {
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState<"analysis" | "setup">("analysis");
+  const movesRef = useRef<HTMLDivElement>(null);
   const tokens = useRef<Record<EngineKey, number>>({ builtin: 0, leela: 0, stockfish: 0 });
   const pool = useRef<AnalysisPool | null>(null);
   const poolOk = useRef(true);
@@ -121,6 +124,7 @@ export default function AnalysisBoard() {
     if (bad) { setErr(bad); return; }
     setErr("");
     replaceTree(createTree(text.trim()), 0);
+    setTab("analysis");
   }
   function loadPgn(text: string, ply = 0) {
     try {
@@ -128,6 +132,7 @@ export default function AnalysisBoard() {
       const line = pathTo(t, mainEnd(t, 0));
       setErr("");
       replaceTree(t, line[Math.max(0, Math.min(ply, line.length - 1))]);
+      setTab("analysis");
     } catch (e) { setErr((e as Error).message); }
   }
   function play(m: Move) { const id = addMove(treeRef.current, cur, m); setCur(id); bump(); }
@@ -240,27 +245,32 @@ export default function AnalysisBoard() {
   const bestSan = parent && parent.bestUci && node.move && node.grade && node.grade !== "best"
     ? (() => { const m = moveFromUci(parent.state, parent.bestUci); return m ? toSan(parent.state, m) : ""; })() : "";
 
-  const moveBtn = (id: number, force: boolean) => {
-    const n = tree.nodes[id], before = tree.nodes[n.parent as number].state;
-    const num = before.turn === "w" ? `${before.full}.` : force ? `${before.full}…` : "";
+  const SHORT: Record<EngineKey, string> = { stockfish: "Stockfish", leela: "Leela", builtin: "Built-in" };
+  const missing = KEYS.filter((k) => k !== "builtin" && !ready[k]).map((k) => SHORT[k]);
+
+  // keep the current move in view in the move list
+  useEffect(() => { movesRef.current?.querySelector('[data-cur="1"]')?.scrollIntoView({ block: "nearest" }); }, [cur, tree.nodes.length]);
+
+  const moveBtn = (id: number) => {
+    const n = tree.nodes[id];
     return (
-      <span key={id}>
-        {num && <span className="mn">{num}</span>}
-        <button className={"tm" + (id === cur ? " cur" : "")} onClick={() => setCur(id)}>
-          {n.grade && <span className="msym" style={{ color: META[n.grade].color }}>{META[n.grade].sym}</span>}{n.san}
-        </button>
-      </span>
+      <button key={id} className={"tm" + (id === cur ? " cur" : "")} data-cur={id === cur ? "1" : undefined} onClick={() => setCur(id)}>
+        {n.grade && <span className="msym" style={{ color: META[n.grade].color }}>{META[n.grade].sym}</span>}{n.san}
+      </button>
     );
   };
-  const renderLine = (parentId: number, force: boolean): React.ReactNode[] => {
-    const p = tree.nodes[parentId];
-    if (!p.children.length) return [];
-    const [main, ...vars] = p.children;
-    const out: React.ReactNode[] = [moveBtn(main, force)];
-    vars.forEach((v) => out.push(<span key={"v" + v} className="tvar">({moveBtn(v, true)}{renderLine(v, false)})</span>));
-    out.push(...renderLine(main, vars.length > 0));
-    return out;
-  };
+  const renderRows = (rows: LRow[], key: string): React.ReactNode[] =>
+    rows.map((r, i) => r.type === "row" ? (
+      <div key={key + i} className="mrow2">
+        <span className="mn">{r.num}</span>
+        <div className="mcell">{r.w === "dots" ? <span className="mdots">…</span> : r.w !== null ? moveBtn(r.w) : null}</div>
+        <div className="mcell">{r.b !== null && r.b !== "dots" ? moveBtn(r.b) : null}</div>
+      </div>
+    ) : (
+      <div key={key + i} className="mvar-group">
+        {r.lines.map((l, j) => <div key={j} className="mvar">{renderRows(l, key + i + "." + j + ":")}</div>)}
+      </div>
+    ));
 
   const strip = (c: Color) => (
     <div className="pstrip">
@@ -270,15 +280,12 @@ export default function AnalysisBoard() {
       <Captured state={node.state} color={c} />
     </div>
   );
-  const statusText = (k: EngineKey) =>
-    k === "builtin" ? "always available"
-    : (k === "leela" ? leela : stockfish).status === "ready" ? "connected"
-    : (k === "leela" ? leela : stockfish).status === "checking" ? "checking…"
-    : (k === "leela" ? leela : stockfish).status === "missing" ? "not connected" : "…";
 
   return (
-    <div className="an">
-      <div className="an-left">
+    <div className="an2">
+      <h1 className="sr-only">Analysis board</h1>
+
+      <div className="an2-board">
         {strip(side === "w" ? "b" : "w")}
         <div className="boardrow">
           <EvalBar win={win} label={evalLabel} whiteAtBottom={side === "w"} />
@@ -286,102 +293,120 @@ export default function AnalysisBoard() {
         </div>
         {strip(side)}
         <div className="controls">
-          <button className="btn small" onClick={() => setCur(0)} disabled={cur === 0} aria-label="Start">⏮</button>
-          <button className="btn small" onClick={back} disabled={node.parent === null} aria-label="Back">◀</button>
-          <button className="btn small" onClick={forward} disabled={!node.children.length} aria-label="Forward">▶</button>
-          <button className="btn small" onClick={() => setCur(mainEnd(tree, cur))} disabled={!node.children.length} aria-label="End">⏭</button>
-          <button className="btn small" onClick={() => setSide(side === "w" ? "b" : "w")} title="Flip the board (F)">Flip</button>
-          <button className={"btn small" + (drawMode ? " primary" : "")} aria-pressed={drawMode} onClick={() => setDrawMode(!drawMode)} title="Draw arrows with the left mouse button or a finger">✎ Draw</button>
-          <button className="btn small" onClick={removeHere} disabled={cur === 0} title="Delete this move and everything after it">Delete move</button>
+          <button className="btn small" onClick={() => setCur(0)} disabled={cur === 0} aria-label="Start" title="Start (Home)">⏮</button>
+          <button className="btn small" onClick={back} disabled={node.parent === null} aria-label="Back" title="Back (←)">◀</button>
+          <button className="btn small" onClick={forward} disabled={!node.children.length} aria-label="Forward" title="Forward (→)">▶</button>
+          <button className="btn small" onClick={() => setCur(mainEnd(tree, cur))} disabled={!node.children.length} aria-label="End" title="End">⏭</button>
+          <span className="ctl-gap" />
+          <button className="btn small" onClick={() => setSide(side === "w" ? "b" : "w")} title="Flip the board (F)">⇅ Flip</button>
+          <button className={"btn small" + (drawMode ? " primary" : "")} aria-pressed={drawMode} onClick={() => setDrawMode(!drawMode)} title="Draw arrows with the left mouse button or a finger. With a mouse you can also right-click and drag.">✎ Draw</button>
+          <button className="btn small" onClick={removeHere} disabled={cur === 0} title="Delete this move and everything after it">🗑 Delete</button>
         </div>
-        <p className="muted small-note">Move any piece for either side. Right-click and drag draws arrows (Shift red, Ctrl blue, Alt yellow). Keys: ← → step, Home/End, F flip.</p>
       </div>
 
-      <div className="an-right">
-        <section className="card">
-          <h1 className="an-title">Analysis board</h1>
-          {opening && <p className="opening"><span aria-hidden="true">📖</span> {opening}</p>}
-          {st.over && <p className="bad">{st.reason}{st.result && st.result !== "draw" ? `: ${st.result === "w" ? "White" : "Black"} wins` : ""}.</p>}
-          {node.grade && node.move && (
-            <p className="an-fb">
-              <span className="cbadge" style={{ background: META[node.grade].color }}>{META[node.grade].sym}</span>{" "}
-              {node.san} is {META[node.grade].art}.{bestSan ? ` The engine preferred ${bestSan}.` : ""}
-            </p>
-          )}
-          {agree && <p className="muted">{agree}</p>}
-        </section>
+      <aside className="an2-panel">
+        <div className="an2-tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "analysis"} className={tab === "analysis" ? "on" : ""} onClick={() => setTab("analysis")}>Analysis</button>
+          <button role="tab" aria-selected={tab === "setup"} className={tab === "setup" ? "on" : ""} onClick={() => setTab("setup")}>Setup &amp; share</button>
+        </div>
 
-        <section className="card an-eng">
-          <h2>Engines</h2>
-          {KEYS.map((k) => (
-            <label key={k} className={"chk engrow" + (ready[k] ? "" : " unavailable")}>
-              <input type="checkbox" checked={on[k]} disabled={!ready[k]} onChange={(e) => setOn({ ...on, [k]: e.target.checked })} />
-              <span className="dotc" style={{ background: COLOR[k] }} />
-              <span>{LABEL[k]}</span>
-              <span className="muted">{statusText(k)}</span>
-            </label>
-          ))}
-          {(!ready.leela || !ready.stockfish) && <p className="muted small-note">Connect Leela and Stockfish in <a href="/settings">Settings</a>; they run on your computer.</p>}
-          <div className="row">
-            <label className="chk">Lines
-              <select value={multipv} onChange={(e) => setMultipv(+e.target.value)}>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}</select>
-            </label>
-            <label className="chk"><input type="checkbox" checked={lineArrows} onChange={(e) => setLineArrows(e.target.checked)} /> Arrows</label>
-            <button className="btn small" onClick={() => setPaused(!paused)}>{paused ? "Resume analysis" : "Pause analysis"}</button>
-            <button className="btn small" onClick={() => { checkLeela(); checkStockfish(); }}>Check engines</button>
-          </div>
-        </section>
-
-        {active.length === 0 && <p className="muted">Turn on at least one engine to see its lines.</p>}
-        {paused && active.length > 0 && <p className="muted">Analysis is paused.</p>}
-        {!paused && active.map((k) => {
-          const r = results[k], valid = r.fen === fen && r.lines;
-          return (
-            <section key={k} className="card an-panel" style={{ borderTopColor: COLOR[k] }}>
-              <div className="an-phead">
-                <strong>{LABEL[k]}</strong>
-                {valid && r.lines!.length > 0 && <span className={"leval " + (toWhite(r.lines![0].score, node.state.turn) >= 0 ? "w" : "b")}>{fmtWhite(toWhite(r.lines![0].score, node.state.turn))}</span>}
-                <span className="muted">{r.busy ? "analysing… " : ""}{valid ? r.label : ""}</span>
-              </div>
-              {r.error && <p className="bad">{r.error}</p>}
-              {!valid && !r.error && <p className="muted">Analysing this position…</p>}
-              {valid && r.lines!.length === 0 && <p className="muted">There are no moves here: the game is over.</p>}
-              {valid && r.lines!.map((l, i) => (
-                <div key={i} className={"lline" + (i === 0 ? " top" : "")}>
-                  <span className={"leval " + (toWhite(l.score, node.state.turn) >= 0 ? "w" : "b")}>{fmtWhite(toWhite(l.score, node.state.turn))}</span>
-                  <span className="lmoves">{pvTokens(node.state, l).map((t, j) => <button key={j} className="lm" onClick={() => playLine(r.lines!, i, j)} title="Play this line on the board">{t}</button>)}</span>
-                </div>
+        {tab === "analysis" ? (
+          <div className="an2-body">
+            <div className="an2-tool">
+              {KEYS.map((k) => (
+                <button key={k} className={"echip" + (on[k] && ready[k] ? " on" : "")} disabled={!ready[k]} aria-pressed={on[k] && ready[k]}
+                  onClick={() => setOn({ ...on, [k]: !on[k] })} title={ready[k] ? `Show or hide ${LABEL[k]}` : `${LABEL[k]} is not connected. Set it up in Settings.`}>
+                  <span className="dotc" style={{ background: COLOR[k] }} />{SHORT[k]}
+                </button>
               ))}
-            </section>
-          );
-        })}
+              <span className="an2-spacer" />
+              <label className="chk" title="How many lines each engine shows">Lines
+                <select value={multipv} onChange={(e) => setMultipv(+e.target.value)}>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}</select>
+              </label>
+              <button className={"echip" + (lineArrows ? " on" : "")} aria-pressed={lineArrows} onClick={() => setLineArrows(!lineArrows)} title="Draw the engines' best moves on the board">Arrows</button>
+              <button className="echip" onClick={() => setPaused(!paused)} title="Pause or resume the engines">{paused ? "▶ Resume" : "⏸ Pause"}</button>
+            </div>
 
-        <section className="card">
-          <h2>Moves</h2>
-          <div className="an-moves">{tree.nodes[0].children.length ? renderLine(0, false) : <span className="muted">Make a move on the board to start.</span>}</div>
-          <div className="export">
-            <button className="btn small" onClick={() => copyText(toPgn(tree), "PGN copied")}>Copy PGN</button>
-            <button className="btn small" onClick={() => copyText(fen, "FEN copied")}>Copy FEN</button>
-            {copied && <span className="good" role="status">{copied}</span>}
-          </div>
-        </section>
+            {missing.length > 0 && (
+              <div className="an2-hint">
+                {missing.join(" and ")} {missing.length > 1 ? "are" : "is"} not connected. <a href="/settings">Set up</a> or{" "}
+                <button className="linklike" onClick={() => { checkLeela(); checkStockfish(); }}>check again</button>.
+              </div>
+            )}
 
-        <section className="card">
-          <h2>Set up a position</h2>
-          <label>FEN
-            <input value={fenText} onChange={(e) => setFenText(e.target.value)} placeholder={START_FEN} onKeyDown={(e) => e.key === "Enter" && setPosition(fenText)} />
-          </label>
-          <div className="row">
-            <button className="btn small primary" onClick={() => setPosition(fenText)}>Set position</button>
-            <button className="btn small" onClick={() => { setErr(""); replaceTree(createTree(START_FEN), 0); }}>Starting position</button>
+            <div className="an2-info">
+              {opening && <span className="opening"><span aria-hidden="true">📖</span> {opening}</span>}
+              {st.over && <span className="bad">{st.reason}{st.result && st.result !== "draw" ? `: ${st.result === "w" ? "White" : "Black"} wins` : ""}</span>}
+              {node.grade && node.move && (
+                <span className="an-fb">
+                  <span className="cbadge" style={{ background: META[node.grade].color }}>{META[node.grade].sym}</span> {node.san} is {META[node.grade].art}{bestSan ? `. Engine preferred ${bestSan}` : ""}
+                </span>
+              )}
+              {agree && <span className="muted">{agree}</span>}
+              {!opening && !st.over && !node.grade && !agree && <span className="muted">Move a piece, click a line, or load a game.</span>}
+            </div>
+
+            <div className="an2-lines">
+              {active.length === 0 && <p className="muted">Turn on an engine above to see its lines.</p>}
+              {paused && active.length > 0 && <p className="muted">Analysis is paused.</p>}
+              {!paused && active.map((k) => {
+                const r = results[k], valid = r.fen === fen && r.lines;
+                return (
+                  <div key={k} className="eng2" style={{ borderLeftColor: COLOR[k] }}>
+                    <div className="eng2-head">
+                      <strong>{LABEL[k]}</strong>
+                      {valid && r.lines!.length > 0 && <span className={"leval " + (toWhite(r.lines![0].score, node.state.turn) >= 0 ? "w" : "b")}>{fmtWhite(toWhite(r.lines![0].score, node.state.turn))}</span>}
+                      <span className="muted">{r.busy ? "analysing… " : ""}{valid ? r.label : ""}</span>
+                    </div>
+                    {r.error && <p className="bad">{r.error}</p>}
+                    {!valid && !r.error && <p className="muted">Analysing this position…</p>}
+                    {valid && r.lines!.length === 0 && <p className="muted">No moves: the game is over.</p>}
+                    {valid && r.lines!.map((l, i) => {
+                      const toks = pvTokens(node.state, l);
+                      return (
+                        <div key={i} className="lline">
+                          <span className={"leval " + (toWhite(l.score, node.state.turn) >= 0 ? "w" : "b")}>{fmtWhite(toWhite(l.score, node.state.turn))}</span>
+                          <span className="lmoves">
+                            {toks.slice(0, 10).map((t, j) => <button key={j} className="lm" onClick={() => playLine(r.lines!, i, j)} title="Play this line on the board">{t}</button>)}
+                            {toks.length > 10 && <span className="muted">…</span>}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="an2-moves" ref={movesRef} aria-label="Moves">
+              {tree.nodes[0].children.length ? renderRows(layoutLine(tree, tree.nodes[0].children[0]), "m") : <p className="muted">The moves will appear here.</p>}
+            </div>
+
+            <div className="an2-foot">
+              <button className="btn small" onClick={() => copyText(toPgn(tree), "PGN copied")}>Copy PGN</button>
+              <button className="btn small" onClick={() => copyText(fen, "FEN copied")}>Copy FEN</button>
+              {copied && <span className="good" role="status">{copied}</span>}
+            </div>
           </div>
-          <label>Or paste a PGN
-            <textarea rows={4} value={pgnText} onChange={(e) => setPgnText(e.target.value)} placeholder="1. e4 e5 2. Nf3 …" />
-          </label>
-          <div className="row"><button className="btn small primary" onClick={() => loadPgn(pgnText)}>Load PGN</button></div>
-          {err && <p className="bad" role="alert">{err}</p>}
-        </section>
-      </div>
+        ) : (
+          <div className="an2-setup">
+            <label>Position (FEN)
+              <input value={fenText} onChange={(e) => setFenText(e.target.value)} placeholder={START_FEN} onKeyDown={(e) => e.key === "Enter" && setPosition(fenText)} />
+            </label>
+            <div className="row">
+              <button className="btn small primary" onClick={() => { setPosition(fenText); }}>Set position</button>
+              <button className="btn small" onClick={() => { setErr(""); replaceTree(createTree(START_FEN), 0); setTab("analysis"); }}>Starting position</button>
+              <button className="btn small" onClick={() => setFenText(fen)}>Use current position</button>
+            </div>
+            <label>Or paste a game (PGN)
+              <textarea rows={6} value={pgnText} onChange={(e) => setPgnText(e.target.value)} placeholder="1. e4 e5 2. Nf3 …" />
+            </label>
+            <div className="row"><button className="btn small primary" onClick={() => { loadPgn(pgnText); }}>Load game</button></div>
+            {err && <p className="bad" role="alert">{err}</p>}
+            <p className="muted small-note">After loading, switch back to the Analysis tab to step through the moves.</p>
+          </div>
+        )}
+      </aside>
     </div>
   );
 }

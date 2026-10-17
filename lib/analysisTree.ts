@@ -93,3 +93,28 @@ export function regrade(t: Tree, id: number): boolean {
   n.grade = g;
   return true;
 }
+
+// ---- move list layout: rows of "1. e4 e5", with variations as indented blocks between rows ----
+export type Cell = number | "dots" | null; // a node id, "…" for a black move that continues after a variation, or empty
+export interface MoveRow { type: "row"; num: string; w: Cell; b: Cell }
+export interface VarBlock { type: "vars"; lines: LRow[][] }
+export type LRow = MoveRow | VarBlock;
+
+// Lays out the line that starts with node `firstId` and follows each node's first child.
+export function layoutLine(t: Tree, firstId: number): LRow[] {
+  const rows: LRow[] = [];
+  let cur: MoveRow | null = null;
+  const flush = () => { if (cur) { rows.push(cur); cur = null; } };
+  let id: number | undefined = firstId;
+  while (id !== undefined) {
+    const n: TNode = t.nodes[id], parent: TNode = t.nodes[n.parent as number];
+    if (parent.state.turn === "w") { flush(); cur = { type: "row", num: `${parent.state.full}.`, w: id, b: null }; }
+    else if (cur) cur.b = id;
+    else cur = { type: "row", num: `${parent.state.full}.`, w: "dots", b: id };
+    const vars = parent.children[0] === id ? parent.children.slice(1) : [];
+    if (vars.length) { flush(); rows.push({ type: "vars", lines: vars.map((v) => layoutLine(t, v)) }); }
+    id = n.children[0];
+  }
+  flush();
+  return rows;
+}
