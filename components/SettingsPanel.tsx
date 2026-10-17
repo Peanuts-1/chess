@@ -8,7 +8,7 @@ const MODES: { id: Mode; label: string }[] = [
 ];
 
 export default function SettingsPanel() {
-  const { settings, set, leela, checkLeela } = useSettings();
+  const { settings, set, leela, checkLeela, stockfish, checkStockfish } = useSettings();
   const note =
     settings.engine !== "leela" ? "Not in use." :
     leela.status === "ready" ? "Connected. Leela is used for Review, hints and the Play opponent." :
@@ -75,6 +75,25 @@ export default function SettingsPanel() {
             <li>Restart <code>npm run dev</code>, choose Leela above, and press Test connection.</li>
           </ol>
           <p className="muted">Leela runs on your own computer through the site&apos;s server, so this works when you run the site locally. It will not work on hosting that cannot run lc0.</p>
+        </details>
+      </section>
+
+      <section className="card">
+        <h2>Stockfish (analysis board)</h2>
+        <p className={stockfish.status === "ready" ? "good" : stockfish.status === "missing" ? "bad" : "muted"}>
+          {stockfish.status === "ready" ? "Connected. Stockfish lines are available on the Analysis page."
+            : stockfish.status === "missing" ? stockfish.reason || "Not connected."
+            : stockfish.status === "checking" ? "Checking…" : "Not checked yet."}
+        </p>
+        <button className="btn small" onClick={checkStockfish}>Test connection</button>
+        <details>
+          <summary>How to set up Stockfish</summary>
+          <ol className="steps">
+            <li>Download <strong>Stockfish</strong> for your system from <a href="https://stockfishchess.org" target="_blank" rel="noreferrer">stockfishchess.org</a> and unzip it.</li>
+            <li>In <code>.env.local</code>, set <code>STOCKFISH_PATH</code> to the Stockfish program. Optional: <code>STOCKFISH_THREADS</code> (default 1), <code>STOCKFISH_HASH</code> in MB (default 64) and <code>STOCKFISH_PROCESSES</code> (default 2).</li>
+            <li>Restart <code>npm run dev</code> and press Test connection.</li>
+          </ol>
+          <p className="muted">Like Leela, Stockfish runs on your own computer through the site&apos;s server.</p>
         </details>
       </section>
     </div>

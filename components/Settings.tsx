@@ -1,6 +1,6 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { leelaStatus } from "@/lib/leela";
+import { engineStatus } from "@/lib/engines";
 
 export type Mode = "system" | "light" | "dark";
 export type BoardTheme = "slate" | "green" | "walnut" | "blue" | "rose" | "violet";
@@ -26,6 +26,8 @@ interface Ctx {
   set: (p: Partial<Settings>) => void;
   leela: LeelaState;
   checkLeela: () => Promise<void>;
+  stockfish: LeelaState;
+  checkStockfish: () => Promise<void>;
 }
 const SettingsCtx = createContext<Ctx | null>(null);
 
@@ -39,6 +41,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
   const [leela, setLeela] = useState<LeelaState>({ status: "idle" });
+  const [stockfish, setStockfish] = useState<LeelaState>({ status: "idle" });
 
   useEffect(() => {
     try { const s = localStorage.getItem(KEY); if (s) setSettings({ ...DEFAULTS, ...JSON.parse(s) }); } catch { /* ignore */ }
@@ -61,8 +64,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   const checkLeela = useCallback(async () => {
     setLeela({ status: "checking" });
-    const r = await leelaStatus();
+    const r = await engineStatus("leela");
     setLeela(r.available ? { status: "ready" } : { status: "missing", reason: r.reason });
+  }, []);
+
+  const checkStockfish = useCallback(async () => {
+    setStockfish({ status: "checking" });
+    const r = await engineStatus("stockfish");
+    setStockfish(r.available ? { status: "ready" } : { status: "missing", reason: r.reason });
   }, []);
 
   useEffect(() => { if (settings.engine === "leela" && leela.status === "idle") checkLeela(); }, [settings.engine, leela.status, checkLeela]);
@@ -72,7 +81,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     if (p.engine === "leela") setLeela({ status: "idle" });
   }, []);
 
-  return <SettingsCtx.Provider value={{ settings, set, leela, checkLeela }}>{children}</SettingsCtx.Provider>;
+  return <SettingsCtx.Provider value={{ settings, set, leela, checkLeela, stockfish, checkStockfish }}>{children}</SettingsCtx.Provider>;
 }
 
 export function ThemeToggle() {

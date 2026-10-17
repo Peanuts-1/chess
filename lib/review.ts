@@ -36,7 +36,7 @@ const NAME: Record<string, string> = { p: "pawn", n: "knight", b: "bishop", r: "
 export const winPct = (cp: number) => 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * Math.max(-1500, Math.min(1500, cp)))) - 1);
 const same = (a: Move | null, b: Move) => !!a && a.from === b.from && a.to === b.to && (a.promo ?? "") === (b.promo ?? "");
 
-function gradeOf(loss: number, isBest: boolean): Grade {
+export function gradeOf(loss: number, isBest: boolean): Grade {
   if (isBest || loss < 0.5) return "best";
   if (loss < 2) return "excellent";
   if (loss < 6) return "good";

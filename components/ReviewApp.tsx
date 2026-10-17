@@ -587,6 +587,7 @@ export default function ReviewApp() {
               <button className="btn small" onClick={() => copyText(annotatedPgn(game, rev), "PGN copied")}>Copy PGN</button>
               <button className="btn small" onClick={downloadPgn}>Download PGN</button>
               <button className="btn small" onClick={() => copyText(toFen(boardState), "FEN copied")}>Copy FEN</button>
+              <button className="btn small" onClick={() => { try { localStorage.setItem("openfile-analysis-import", JSON.stringify({ pgn: annotatedPgn(game, rev), ply })); } catch { /* ignore */ } window.location.href = "/analysis"; }}>Open in analysis board</button>
               {copied && <span className="good" role="status">{copied}</span>}
             </div>
           </>

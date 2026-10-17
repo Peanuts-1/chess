@@ -65,3 +65,12 @@ and uses fewer nodes on the first moves of a game. Extra lc0 options can be pass
 - **Learn from your mistakes**: steps through your mistakes, misses and blunders and asks you to find a better move for each.
 - **Export**: copy or download an annotated PGN (`[%eval]` and `[%clk]` comments, `?!` `?` `??` marks) and copy the current FEN.
 - **Shortcuts**: arrows step, Home/End, F flips, `[` and `]` jump to the previous/next mistake, Esc leaves a line you are exploring.
+
+## Analysis board (/analysis)
+A free board for self-study. Move pieces for either side, try variations (shown like lichess, with brackets), load a FEN or a PGN, and
+watch live engine lines. Turn on any of **Stockfish**, **Leela (lc0)** and the **built-in engine**: each shows its top moves with
+evaluations and variations (click a move to play the line), and the page tells you when the engines disagree. Every move you play is graded
+(best, inaccuracy, blunder...) from the engine evaluations. Engines search in stages (shallow first, then deeper), so answers appear quickly and improve.
+- Stockfish and Leela run on your computer through the site's server (`lib/uci.ts`, `app/api/engine/route.ts`). Set `STOCKFISH_PATH` (and optionally
+  `STOCKFISH_THREADS`, `STOCKFISH_HASH`, `STOCKFISH_PROCESSES`) next to the Leela settings in `.env.local`.
+- The Review page's "Open in analysis board" button sends the current game here.

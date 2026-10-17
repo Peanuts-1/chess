@@ -371,3 +371,19 @@ a.btn.small { text-decoration: none; }
 .phases { margin-top: .4rem; } .phcell { display: inline-flex; align-items: center; gap: .4rem; justify-content: center; }
 .phbar { display: inline-block; width: 3.2rem; height: .5rem; background: var(--line); border-radius: 999px; overflow: hidden; } .phbar i { display: block; height: 100%; border-radius: 999px; }
 .learnbtn { align-self: flex-start; margin: .3rem 0; }
+
+/* analysis board */
+.an { display: grid; grid-template-columns: minmax(0, 620px) minmax(320px, 1fr); gap: 1.8rem; align-items: start; max-width: 1160px; margin: 0 auto; }
+.an-left { min-width: 0; } .an-right { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.an-left .controls, .an-left > .muted { margin-left: 2.2rem; }
+.an-title { font-size: 1.6rem; margin: 0; }
+.an-fb { margin: .2rem 0; font-weight: 600; }
+.engrow { gap: .5rem; padding: .15rem 0; } .dotc { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; }
+.an-panel { border-top: 4px solid var(--line); gap: .4rem; }
+.an-phead { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.an-moves { line-height: 2; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .1rem; }
+.tm { font: inherit; background: none; border: 0; border-radius: 4px; padding: 0 .3rem; cursor: pointer; color: var(--ink); }
+.tm:hover { background: var(--hover); } .tm.cur { background: rgba(245, 207, 66, .55); font-weight: 700; }
+.tvar { color: var(--muted); font-size: .92rem; margin: 0 .2rem; display: inline; }
+.an-eng select { font: inherit; margin-left: .3rem; }
+@media (max-width: 900px) { .an { grid-template-columns: 1fr; } }
